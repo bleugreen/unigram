@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.5
+
+The Claude column is no longer a reconstruction taken on trust. `verify-claude.py` ran
+against Anthropic's official `count_tokens` endpoint on `claude-opus-5` — all 256
+entries space-prefixed, all 256 bare, and the cost table — and `ctok` agreed on every
+one. The docs say so, and say what it does and does not establish: `ctok` is validated
+for the strings this crate actually measures, not certified in general.
+
+That was the last claim resting on the weakest available source, and it was the one
+carrying the most weight, since Claude is the family where `unigram` beats the compact
+encodings outright.
+
 ## 0.3.4
 
 Documentation only.

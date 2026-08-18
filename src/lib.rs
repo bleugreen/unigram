@@ -105,11 +105,13 @@
 //! - **One token, space-prefixed and bare,** under every tokenizer the verifier pins:
 //!   OpenAI's `r50k_base`, `p50k_base`, `cl100k_base`, and `o200k_base`; the
 //!   `hf-internal-testing/llama-tokenizer` SentencePiece artifact at revision
-//!   `d02ad6cb`; and `ctok` 1.0.0's `"5.0"` counter, an *unofficial* offline
-//!   reconstruction of Claude's tokenizer rather than Anthropic's own. Those exact
-//!   artifacts are the claim — not every past or future model sharing a name, and in
-//!   particular not Llama 3, which tokenizes with tiktoken rather than the
-//!   SentencePiece model checked here.
+//!   `d02ad6cb`; and `ctok` 1.0.0's `"5.0"` counter, an offline reconstruction of
+//!   Claude's tokenizer rather than Anthropic's own. `ctok`'s figures for this table
+//!   have been checked against Anthropic's official `count_tokens` endpoint on
+//!   `claude-opus-5` — all 256 entries, spaced and bare, and the cost table — and they
+//!   agree exactly; `verify-claude.py` reruns that. Those exact artifacts are the
+//!   claim, not every past or future model sharing a name, and in particular not
+//!   Llama 3, which tokenizes with tiktoken rather than the SentencePiece model here.
 //! - **No two entries within one character edit, and none a prefix or a
 //!   suffix-derivative of another.** A slipped character, a dropped suffix, or a
 //!   completed word lands outside the alphabet rather than on a different valid entry.

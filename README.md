@@ -152,10 +152,12 @@ of those separators anyway, so a value that comes back joined differently is not
 - **One token, space-prefixed and bare,** under every tokenizer the verifier pins:
   OpenAI's `r50k_base`, `p50k_base`, `cl100k_base`, `o200k_base`; the
   `hf-internal-testing/llama-tokenizer` SentencePiece artifact at revision `d02ad6cb`;
-  and `ctok` 1.0.0's `"5.0"` counter, an **unofficial** offline reconstruction of
-  Claude's tokenizer rather than Anthropic's own. Those exact artifacts are the claim
-  — not every model that shares a name, and in particular not Llama 3, which
-  tokenizes with tiktoken rather than the SentencePiece model checked here.
+  and `ctok` 1.0.0's `"5.0"` counter, an offline reconstruction of Claude's tokenizer
+  rather than Anthropic's own — checked against Anthropic's official `count_tokens`
+  endpoint on `claude-opus-5` for all 256 entries, spaced and bare, where it agrees
+  exactly (`verify-claude.py` reruns it). Those exact artifacts are the claim, not
+  every model that shares a name, and in particular not Llama 3, which tokenizes with
+  tiktoken rather than the SentencePiece model checked here.
 - **No two entries within one character edit, and none a prefix or suffix-derivative
   of another.** A slipped character, a dropped suffix, or a completed word lands
   outside the alphabet rather than on a different valid entry.
@@ -188,6 +190,11 @@ uv run verify-alphabet.py
 
 Run it after any edit to the table. A green test suite alone establishes none of what
 this crate is named for.
+
+`verify-claude.py` is the audit for the one measurement that is a reconstruction rather
+than a vocabulary: it re-checks the Claude column against Anthropic's official
+`count_tokens` endpoint and reports any entry where the two disagree. Needs
+`ANTHROPIC_API_KEY`; roughly 300 calls with `--bare`. It last ran clean on every entry.
 
 ## License
 
