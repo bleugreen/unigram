@@ -128,37 +128,6 @@ BIP39 optimises for a different thing, and does it well: unique four-character
 prefixes and human-transcription distance, for seed phrases read off paper. That is
 worth having. It is not what makes a word cost one token.
 
-## Choosing a length
-
-Length is the entropy budget and the token budget at once — the two cannot drift
-apart, which is most of why this is easier to size than hex.
-
-| words | bits | distinct values | values before a 1-in-a-million collision |
-|-------|------|-----------------|------------------------------------------|
-| 2     | 16   | 65,536          | fewer than 1                             |
-| 3     | 24   | 16.8 million    | 5                                        |
-| 4     | 32   | 4.3 billion     | 92                                       |
-| 6     | 48   | 281 trillion    | 23,700                                   |
-| 8     | 64   | 1.8 × 10¹⁹      | 6 million                                |
-| 16    | 128  | 3.4 × 10³⁸      | 2.6 × 10¹⁶                               |
-| 32    | 256  | 1.2 × 10⁷⁷      | 4.8 × 10³⁵                               |
-
-The right column is the birthday bound, `k ≈ √(2·N·p)`, and it is the column to size
-against: collisions arrive at the square root of the space, not at the space. Sixteen
-words is a UUID's width, thirty-two a SHA-256's.
-
-Two questions hide in that table and it answers only one. **Collision** is the right
-column — how many values may be outstanding before two coincide. **Guessing** is
-separate: `try_random` draws from the OS CSPRNG, so every bit is unpredictable, but
-four words is 4.3 billion candidates, which is an afternoon for anything that can ask
-freely. Four words suits a value that is scoped, short-lived, and rate-limited — an
-acknowledgement nonce, a correlation id. A value a stranger can grind at wants eight
-or more.
-
-Comparison is byte equality, which is not constant-time. A value used as a bearer
-credential wants a constant-time comparison over `as_bytes`, which this crate
-deliberately does not pretend to provide.
-
 ## The join is a space
 
 Tokenizer vocabularies hold their canonical word entries space-prefixed, so the space

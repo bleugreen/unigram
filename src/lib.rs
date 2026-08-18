@@ -149,38 +149,6 @@
 //!
 //! Both refuse an unknown word and name it.
 //!
-//! ## Choosing a length
-//!
-//! One word is one byte and one token, so a value's length is its entropy budget and
-//! its token budget at once — the two cannot drift apart, which is most of why this
-//! is easier to reason about than hex.
-//!
-//! | words | bits | distinct values | values before a 1-in-a-million collision |
-//! |-------|------|-----------------|------------------------------------------|
-//! | 2     | 16   | 65,536          | fewer than 1                             |
-//! | 3     | 24   | 16.8 million    | 5                                        |
-//! | 4     | 32   | 4.3 billion     | 92                                       |
-//! | 6     | 48   | 281 trillion    | 23,700                                   |
-//! | 8     | 64   | 1.8 × 10^19     | 6 million                                |
-//! | 16    | 128  | 3.4 × 10^38     | 2.6 × 10^16                              |
-//! | 32    | 256  | 1.2 × 10^77     | 4.8 × 10^35                              |
-//!
-//! The right column is the birthday bound, `k ≈ sqrt(2·N·p)`, and it is the column to
-//! size against: collisions arrive at the square root of the space, not at the space.
-//! Sixteen words is a UUID's width, thirty-two a SHA-256's.
-//!
-//! Two questions hide in that table and it answers only one. **Collision** is the
-//! right column — how many values may be outstanding before two coincide.
-//! **Guessing** is separate: [`UnigramId::try_random`] draws from the OS CSPRNG, so
-//! every bit is unpredictable, but four words is 4.3 billion candidates, which is an
-//! afternoon for anything that can ask freely. Four words suits a value that is
-//! scoped, short-lived, and rate-limited — an acknowledgement nonce, a correlation
-//! id. A value a stranger can grind at wants eight or more.
-//!
-//! Comparison here is byte equality, which is not constant-time. A value used as a
-//! bearer credential wants a constant-time comparison over [`UnigramId::as_bytes`],
-//! which this crate does not provide.
-//!
 //! ## Why the alphabet is 256 and not larger
 //!
 //! A wider alphabet would carry more bits per token, so it is worth saying why this
@@ -329,10 +297,6 @@ impl<const N: usize> UnigramId<N> {
     }
 
     /// Mint `N` bytes of fresh entropy from the OS CSPRNG.
-    ///
-    /// See "Choosing a length" in the crate documentation for how wide to make it —
-    /// four bytes is right only for a value that is scoped, short-lived, and
-    /// rate-limited.
     pub fn try_random() -> Result<Self, getrandom::Error> {
         let mut bytes = [0u8; N];
         getrandom::fill(&mut bytes)?;
@@ -789,8 +753,7 @@ pub fn decode_recovered(text: &str) -> Result<Vec<u8>, DecodeError> {
 
 /// Mint `bytes` bytes of fresh entropy, encoded.
 ///
-/// See [`UnigramId::try_random`] for the typed form, and "Choosing a length" in the
-/// crate documentation for how many bytes to ask for.
+/// See [`UnigramId::try_random`] for the typed form.
 pub fn try_mint(bytes: usize) -> Result<String, getrandom::Error> {
     let mut buffer = vec![0u8; bytes];
     getrandom::fill(&mut buffer)?;

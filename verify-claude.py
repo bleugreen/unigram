@@ -55,8 +55,12 @@ def main() -> int:
     def ctok_count(text: str) -> int:
         return token_count(text, "5.0")
 
-    # The per-message frame, subtracted from everything so only the text is compared.
-    frame_api, frame_ctok = official(CARRIER), ctok_count(CARRIER)
+    # Two baselines. `carrier_*` is what the carrier costs, differenced away by the
+    # spaced measurements. `frame_*` is the bare per-message overhead, needed only by
+    # the bare measurement, and derived as carrier-minus-one rather than from an empty
+    # message: the API rejects an empty text block, and "the" is one token everywhere.
+    carrier_api, carrier_ctok = official(CARRIER), ctok_count(CARRIER)
+    frame_api, frame_ctok = carrier_api - 1, carrier_ctok - 1
     print(f"model {MODEL}   frame: api {frame_api}, ctok {frame_ctok}\n")
 
     failures: list[str] = []
@@ -69,7 +73,7 @@ def main() -> int:
 
     def check_chunk(chunk: list[str]) -> tuple[list[str], int, int]:
         joined = " ".join(chunk)
-        return chunk, official(f"{CARRIER} {joined}") - frame_api, ctok_count(f"{CARRIER} {joined}") - frame_ctok
+        return chunk, official(f"{CARRIER} {joined}") - carrier_api, ctok_count(f"{CARRIER} {joined}") - carrier_ctok
 
     with ThreadPoolExecutor(WORKERS) as pool:
         for chunk, api, ctok_marginal in pool.map(check_chunk, chunks):
@@ -94,9 +98,9 @@ def main() -> int:
             state ^= (state << 17) & 0xFFFFFFFFFFFFFFFF
             payload.append((state >> 24) & 0xFF)
         value = " ".join(words[b] for b in payload)
-        api = official(f"{CARRIER} {value}") - frame_api
-        ctok_marginal = ctok_count(f"{CARRIER} {value}") - frame_ctok
-        hex_api = official(f"{CARRIER} {bytes(payload).hex()}") - frame_api
+        api = official(f"{CARRIER} {value}") - carrier_api
+        ctok_marginal = ctok_count(f"{CARRIER} {value}") - carrier_ctok
+        hex_api = official(f"{CARRIER} {bytes(payload).hex()}") - carrier_api
         flag = "" if api == size else f"   <-- expected {size}"
         print(f"  {size:2d} bytes: unigram api {api:3d} / ctok {ctok_marginal:3d}"
               f"   hex api {hex_api:3d}{flag}")
@@ -111,7 +115,7 @@ def main() -> int:
         print(f"\nbare cost, {len(words)} calls")
 
         def check_bare(word: str) -> tuple[str, int, int]:
-            return word, official(word) - official(""), ctok_count(word) - ctok_count("")
+            return word, official(word) - frame_api, ctok_count(word) - frame_ctok
 
         with ThreadPoolExecutor(WORKERS) as pool:
             over = []

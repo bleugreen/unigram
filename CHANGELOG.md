@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.4
+
+Documentation only.
+
+Removed the sizing and collision analysis. How many bytes to ask for is the caller's
+arithmetic, identical for any N-byte identifier, and a codec has no standing to run it —
+`encode` takes the bytes it is given. The birthday table, the collision-versus-guessing
+discussion, and the constant-time comparison note are all gone.
+
+It also produced a wrong number nobody caught, which is what computing out-of-scope
+things gets you: the two-word row read "fewer than 1", from a continuous approximation
+applied below the range where it holds. One value cannot collide with anything.
+
+Also fixes a real bug in `verify-claude.py`, which had never been run: it derived the
+per-message frame from `count_tokens` on an empty string, which the API rejects. The
+frame now comes from the carrier word instead.
+
 ## 0.3.3
 
 Documentation only. Two rounds of external review pushed the docs into pre-emptive
