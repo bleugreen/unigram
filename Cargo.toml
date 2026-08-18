@@ -1,0 +1,18 @@
+[package]
+name = "unigram"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Bijective codec between bytes and single-token words, for moving identifiers through a language model"
+repository = "https://github.com/bleugreen/unigram"
+documentation = "https://docs.rs/unigram"
+readme = "README.md"
+keywords = ["encoding", "tokenizer", "llm", "codec", "identifier"]
+categories = ["encoding", "text-processing"]
+exclude = ["/.github"]
+
+[dependencies]
+# The OS CSPRNG, and this crate's only dependency at any stage. Because the
+# alphabet is exactly 256 entries, every byte maps to one word with no rejection
+# sampling, so raw entropy is all `mint` needs.
+getrandom = "0.3"
