@@ -16,8 +16,10 @@ Everything the crate is NAMED for is checked here instead:
 
   * every alphabet entry costs exactly one token, in all five families;
   * the property composes -- an encoded value costs one token per byte;
-  * it survives the contexts a value actually sits in, to within one token for
-    the opening word;
+  * every entry costs one token BARE too, so a value at the start of a string
+    costs one token per byte like any other;
+  * it survives the contexts a value actually sits in, swept over every possible
+    opening and closing word rather than one convenient sample;
   * it beats the hex it replaces, on the mean;
   * and the space between two words is free, where no other separator is.
 
@@ -51,7 +53,10 @@ LLAMA_REPO = "hf-internal-testing/llama-tokenizer"
 LLAMA_REVISION = "d02ad6cb9dd2c2296a6332199fa2fdca5938fef0"
 
 # Where an encoded value actually sits, and what precedes its opening word. Only
-# the FIRST word can be charged extra: every later word has a space before it.
+# the FIRST and LAST words can be charged extra, so those are the two that get
+# swept across all 256 entries below. 0.2.0 checked one fixed payload here, whose
+# opening word happened to be favourable, and shipped a bound that was false for
+# 22 of the other 255.
 CONTEXTS = {
     "carrier 'the X'": ("the ", ""),
     "start of string": ("", ""),
@@ -62,9 +67,10 @@ CONTEXTS = {
     "markdown `X`": ("use `", "`"),
     "after open paren": ("token (", ")"),
 }
-# One token, for the opening word when no space precedes it. Anything more would
-# mean the per-byte claim does not survive being embedded.
-MAX_OPENING_OVERHEAD = 1
+# What punctuation immediately before a value may add. A backtick or paren is a
+# token the surrounding text pays for either way, so the measurement attributes it
+# to the value; what matters is that it does not scale with the payload.
+MAX_CONTEXT_OVERHEAD = 1
 
 
 def alphabet() -> list[str]:
@@ -134,8 +140,16 @@ def check(name: str, raw_count: Callable[[str], int], words: list[str]) -> list[
     failures: list[str] = []
 
     expensive = [word for word in words if cost(word) != 1]
-    print(f"{name:12s}  {len(words) - len(expensive):3d}/{len(words)} entries are one token")
-    failures += [f"{name}: `{word}` is not one token" for word in expensive]
+    print(f"{name:12s}  {len(words) - len(expensive):3d}/{len(words)} entries are one token spaced")
+    failures += [f"{name}: `{word}` is not one token space-prefixed" for word in expensive]
+
+    # Bare cost, which is what an opening word pays at the start of a string. This
+    # is the check 0.2.0 did not have, and 22 of its entries failed it.
+    empty = raw_count("")
+    bare = {word: raw_count(word) - empty for word in words}
+    over = sorted(word for word, c in bare.items() if c != 1)
+    print(f"{name:12s}  {len(words) - len(over):3d}/{len(words)} entries are one token bare")
+    failures += [f"{name}: `{word}` costs {bare[word]} tokens bare" for word in over]
 
     for size in SAMPLE_PAYLOAD_SIZES:
         hex_costs, word_costs = [], []
@@ -156,24 +170,34 @@ def check(name: str, raw_count: Callable[[str], int], words: list[str]) -> list[
         if mean <= size:
             failures.append(f"{name}: hex is no more expensive at {size} bytes ({mean:.1f})")
 
-    # The claim has to survive being embedded, not just being appended to a word.
-    # Only the opening word can be charged extra, and only by one.
-    value = encode(bytes(range(1, 5)))
-    overheads = {}
+    # The claim has to survive being embedded, and the words that decide whether it
+    # does are the ones at the edges. Swept over every entry in both positions:
+    # holding either fixed is exactly how the 0.2.0 bound got shipped wrong.
     for label, (prefix, suffix) in CONTEXTS.items():
-        overheads[label] = cost_in(value, prefix, suffix) - 4
-    worst = max(overheads.values())
-    print(
-        f"{name:12s}  contexts: opening-word overhead "
-        + ", ".join(f"{label} {o:+d}" for label, o in overheads.items())
-    )
-    failures += [
-        f"{name}: in context {label!r} a 4-byte value costs {4 + o} tokens, not 4+{MAX_OPENING_OVERHEAD}"
-        for label, o in overheads.items()
-        if o > MAX_OPENING_OVERHEAD
-    ]
-    if worst > MAX_OPENING_OVERHEAD:
-        failures.append(f"{name}: worst-context overhead is {worst}")
+        worst_open, worst_open_word = -99, None
+        for opening in words:
+            value = " ".join([opening] + [words[b] for b in (2, 3, 4)])
+            overhead = cost_in(value, prefix, suffix) - 4
+            if overhead > worst_open:
+                worst_open, worst_open_word = overhead, opening
+        worst_close, worst_close_word = -99, None
+        for closing in words:
+            value = " ".join([words[b] for b in (1, 2, 3)] + [closing])
+            overhead = cost_in(value, prefix, suffix) - 4
+            if overhead > worst_close:
+                worst_close, worst_close_word = overhead, closing
+        worst = max(worst_open, worst_close)
+        print(
+            f"{name:12s}  {label:20s} worst {worst:+d}"
+            f"  (opening `{worst_open_word}` {worst_open:+d},"
+            f" closing `{worst_close_word}` {worst_close:+d})"
+        )
+        if worst > MAX_CONTEXT_OVERHEAD:
+            failures.append(
+                f"{name}: in {label!r} the worst 4-byte value costs {4 + worst}, "
+                f"over the {4 + MAX_CONTEXT_OVERHEAD} allowed "
+                f"(opening `{worst_open_word}`, closing `{worst_close_word}`)"
+            )
 
     # The separator, checked so nobody "tidies" it. A space between two words is
     # absorbed into the space-prefixed vocabulary entry that follows it and costs

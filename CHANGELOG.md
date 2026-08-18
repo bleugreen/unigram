@@ -1,62 +1,82 @@
 # Changelog
 
+## 0.3.0
+
+**The wire format changed again.** Values encoded by 0.2.x decode to different bytes.
+`FORMAT_VERSION` is 3.
+
+### The token claim was false, and is now true
+
+0.2.0 documented "one token per byte, plus at most one for the opening word". A second
+external review disproved it, and it reproduced: **22 of the 256 entries cost two or
+three tokens when not preceded by a space**, so a value beginning with `council` cost
+N+2 at the start of a string under three of the four GPT vocabularies.
+
+The verifier missed it by construction. It measured one fixed payload per context, and
+that payload's opening word — `account` — happened to be cheap. The one variable that
+decides whether the bound holds was the one held fixed.
+
+Both are fixed:
+
+- The alphabet is rebuilt from a pool filtered on one-token cost **bare as well as
+  space-prefixed**, in every family, and additionally on surviving every measured
+  surrounding context. 492 of 573 candidates qualified; 256 were selected.
+- The verifier now sweeps **all 256 entries** through the opening and closing
+  positions of every context, rather than sampling one. That sweep immediately found a
+  second defect the fixed payload had hidden: 33 entries cost up to +3 after a backtick
+  under the Llama artifact. Those are gone from the table too.
+
+The claim is now: one token per byte, plus at most one for punctuation immediately
+before the value — with no list of exceptions.
+
+### Mutation detection, honestly
+
+The alphabet was described as if its edit-distance and suffix rules prevented silent
+mutation. They cannot. All 256 symbols are occupied, so every sequence of alphabet
+words is a valid value: a word swapped for another word, dropped, repeated, or
+transposed decodes cleanly to different bytes. No arrangement of the table changes
+that. The constraints are risk reduction, and the docs now say so.
+
+- `CheckedUnigramId<N>` renders `N + 1` words, the last carrying a CRC-8 over the
+  payload. It catches every single-word substitution and transposition outright —
+  swept exhaustively in the tests — and an arbitrary accidental mutation with
+  probability about 255/256. It detects accidents, not tampering.
+- The alphabet also gained a no-prefix invariant. 0.2.0 had seven prefix pairs
+  (`count`/`country`, `info`/`information`, `print`/`println`, and four more) where
+  completing the shorter word yielded a different valid byte.
+
+### Parser and API
+
+- `NotCanonical` now means what it said: wrong case, and also leading, trailing,
+  repeated, or non-space separators. Previously only a wrong-case word produced it and
+  everything else was reported as an unknown word.
+- Fixed-width parsing is bounded. `UnigramId::<4>::parse` on a million-word input no
+  longer allocates proportionally to the input before reporting the length; it holds
+  `N` bytes and counts the rest.
+- An unrecognised word is truncated to 32 characters and control-escaped before it
+  reaches a `DecodeError`. It is attacker-shaped text on its way to a log line.
+- `decode_recovered` documents what it actually does: it recovers a *reformatted*
+  value, not one embedded in prose. Every word present must be an alphabet word.
+
+### Claims scoped
+
+Tokenizer support now names exact artifacts rather than model families: OpenAI's four
+BPE vocabularies, the `hf-internal-testing/llama-tokenizer` SentencePiece model at
+revision `d02ad6cb`, and `ctok` 1.0.0 as an unofficial Claude reconstruction. Notably
+this says nothing about Llama 3, which tokenizes with tiktoken.
+
+The README compared only against hex, which flattered the result. It now also shows
+base64url and base58, which beat `unigram` on mean under GPT-4o and lose badly under
+Claude, alongside the character-length cost. What `unigram` uniquely has is flat cost
+and readability, not the lowest mean.
+
 ## 0.2.0
 
-**The wire format changed.** Values encoded by 0.1.x decode to different bytes under
-0.2.0. There is no migration path and none is possible, because nothing in an encoded
-value says which table produced it — which is itself why `FORMAT_VERSION` now exists.
-This is the last moment such a change is cheap.
-
-### The alphabet
-
-- Four entries were reachable from another entry by dropping a suffix: `build`/
-  `building`, `head`/`header`, `play`/`players`, `train`/`training`. Under those, a
-  model normalising `training` to `train` produced a different byte and decoded
-  silently. The edit-distance rule never covered this — `training` is four deletions
-  from `train` — and a suffix change is far likelier from a model than a character
-  slip. `building`, `header`, `players`, and `training` are replaced by `font`,
-  `module`, `month`, and `park`, and a test now enforces the property.
-- The table is pinned by a digest test, so changing an entry has to be deliberate
-  rather than something a green suite lets through.
-- `FORMAT_VERSION` records which table is in force.
-
-### The API
-
-- `UnigramId<const N: usize>` holds the bytes, renders the words through `Display`,
-  and makes length part of the type. This is the recommended interface.
-- `decode` is now **canonical**: lowercase words, single spaces, nothing else. The
-  tolerant parser moved to `decode_recovered`. A tolerant parser is right for pulling
-  a value out of model output and wrong at a trust boundary, and having only one of
-  them meant the wrong one was the default.
-- `matches` and `normalize` are **removed**. `matches` inferred a value's format from
-  its syntax, so `matches("AbC", "abc")` and `matches("", "   ")` were both true, and
-  a legacy string made of alphabet words was silently reinterpreted as unigram.
-  Comparison belongs where the format is known, which is the caller.
-- `mint` is replaced by `try_mint`, which reports an unavailable entropy source
-  instead of panicking.
-- `DecodeError::NotCanonical` distinguishes "would have decoded, spelled differently"
-  from "not a word at all".
-
-### Claims
-
-Several were measured for the first time and found wrong.
-
-- **The token claim is now scoped.** One token per byte is exact for every word a
-  space precedes; the opening word costs one extra when it follows a backtick, an
-  open paren, a quote, or a newline. The verifier now measures eight surrounding
-  contexts in every family and fails if any exceeds one token of overhead.
-- **"Densest form the trip allows"** contradicted this crate's own analysis showing
-  509 entries would be denser. It is the densest *byte-aligned* form.
-- **"Appended to, never rearranged"** described an array that is full at 256. It is
-  frozen; there is nothing to append.
-- **"Worst case"** was a sample maximum over 64 payloads, and now says so.
-- The bijection is claimed over *nonempty* byte strings. `encode(&[])` is `""` and
-  both parsers refuse it — deliberate for an identifier codec, and now tested.
-
-### Verification
-
-- Dependencies and the Llama tokenizer revision are pinned exactly.
-- `rust-version = "1.78"` declared and built in CI.
+Extracted the alphabet's silent-mutation hole found by a first review: four entries
+were reachable from another by dropping a suffix (`build`/`building`,
+`train`/`training`, and two more). Introduced `UnigramId<N>`, canonical versus tolerant
+parsing, the frozen digest, `FORMAT_VERSION`, and `try_mint`; removed `matches` and
+`normalize`, which inferred a value's format from its syntax.
 
 ## 0.1.0 – 0.1.5
 

@@ -1,21 +1,24 @@
 name: CI
 
+# Read-only by default: nothing here needs to write to the repository.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
   pull_request:
   schedule:
-    # The tokenizer job pins its dependencies, so it cannot notice upstream moving.
-    # This is the canary that does: same pins, run weekly, so a vocabulary change
-    # surfaces here rather than in someone's token budget.
+    # The gate below pins its dependencies, so it cannot notice upstream moving.
+    # The canary does: same script, latest packages, weekly, non-blocking.
     - cron: "0 6 * * 1"
 
 jobs:
   rust:
-    name: cargo test, clippy, fmt
+    name: cargo test, clippy, fmt, doc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - run: rustup component add clippy rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -28,16 +31,33 @@ jobs:
     name: builds on the declared MSRV
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - uses: dtolnay/rust-toolchain@1.78.0
       - run: cargo build
 
   alphabet:
-    # The cost claims live here, not in cargo test: the five vocabularies this
-    # measures against are far too large to vendor for a unit test.
-    name: alphabet cost, all five tokenizer families
+    # The cost claims live here, not in cargo test: the vocabularies this measures
+    # against are far too large to vendor for a unit test. Pinned exactly, so a pass
+    # here is reproducible.
+    name: alphabet cost, pinned tokenizers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - run: uv run verify-alphabet.py
+
+  canary:
+    # Non-blocking: the same checks against the LATEST tokenizer packages, so that a
+    # vocabulary change upstream surfaces here rather than in someone's token budget.
+    # A pinned job can never tell us this, which is the point of running both.
+    name: alphabet cost, latest tokenizers (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - run: |
+          sed -E 's/(ctok|tiktoken|transformers|sentencepiece|protobuf)==[0-9.]+/\1/' \
+            verify-alphabet.py > /tmp/canary.py
+          uv run --with ctok --with tiktoken --with transformers \
+                 --with sentencepiece --with protobuf /tmp/canary.py

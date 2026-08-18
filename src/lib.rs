@@ -3,7 +3,7 @@
 //! Machine identifiers spend their lives being looked at: handed to a language model
 //! and asked back, printed in a log, quoted in an error, read off a page by whoever
 //! is debugging at the time. This crate carries them as words, so that an id becomes
-//! something a reader can hold — `description note access world` can be said out
+//! something a reader can hold — `created office access world` can be said out
 //! loud, told apart from its neighbour at a glance, and recognised again an hour
 //! later, which is what a name is for.
 //!
@@ -11,8 +11,8 @@
 //! use unigram::UnigramId;
 //!
 //! let id = UnigramId::from_bytes([0x3d, 0x9a, 0x00, 0xff]);
-//! assert_eq!(id.to_string(), "description note access world");
-//! assert_eq!(UnigramId::<4>::parse("description note access world").unwrap(), id);
+//! assert_eq!(id.to_string(), "created office access world");
+//! assert_eq!(UnigramId::<4>::parse("created office access world").unwrap(), id);
 //! ```
 //!
 //! The words come from a fixed alphabet of 256, and two properties follow from that
@@ -41,30 +41,102 @@
 //!   and widens sharply under Llama's SentencePiece, at 58.2 against the same flat
 //!   32. `verify-alphabet.py` prints the table for every family it checks.
 //!
-//! ## What the token claim does and does not cover
+//! ## What the token claim covers
 //!
-//! The per-byte cost is exact for every word that a space precedes, which is every
-//! word in an encoded value except the first. The **first** word costs one extra
-//! token when the character before it is not a space — after a backtick or an open
-//! parenthesis under the GPT vocabularies, or after a quote under Claude. Measured
-//! for a 4-byte value, against an ideal of 4:
+//! Every entry costs one token **space-prefixed and bare**, in all five families, so
+//! an N-byte value costs exactly N tokens at the start of a string, after a space,
+//! inside a JSON string, and mid-sentence. The only surcharge is a punctuation
+//! character immediately before the value — a backtick or an open parenthesis — which
+//! adds one token, once, and is really the punctuation paying for itself. Measured
+//! for a 4-byte value against an ideal of 4, sweeping **every one of the 256 entries**
+//! through the opening and closing positions and keeping the worst:
 //!
-//! | context             | GPT-4o | GPT-3.5/4 | GPT-2/3 | Llama | Claude |
-//! |---------------------|-------:|----------:|--------:|------:|-------:|
-//! | start of string     |      4 |         4 |       4 |     4 |      4 |
-//! | in prose, `X.`      |      4 |         4 |       4 |     4 |      4 |
-//! | after `id: `        |      3 |         3 |       3 |     3 |      4 |
-//! | after a newline     |      4 |         4 |       4 |     4 |      5 |
-//! | JSON `"id":"X"`     |      3 |         4 |       4 |     4 |      5 |
-//! | markdown `` `X` ``  |      5 |         5 |       5 |     5 |      4 |
-//! | after `(`           |      5 |         5 |       5 |     5 |      4 |
+//! | context             | GPT-4o | GPT-3.5/4 | GPT-3 | GPT-2 | Llama | Claude |
+//! |---------------------|-------:|----------:|------:|------:|------:|-------:|
+//! | start of string     |     +0 |        +0 |    +0 |    +0 |    +0 |     +0 |
+//! | in prose, `X.`      |     +0 |        +0 |    +0 |    +0 |    +0 |     +0 |
+//! | JSON `"id":"X"`     |     -1 |        +0 |    +0 |    +0 |    +0 |     +1 |
+//! | after a newline     |     +0 |        +0 |    +0 |    +0 |    +0 |     +1 |
+//! | after `id: `        |     -1 |        -1 |    -1 |    -1 |    -1 |     +0 |
+//! | markdown `` `X` ``  |     +1 |        +1 |    +1 |    +1 |    +1 |     +0 |
+//! | after `(`           |     +1 |        +1 |    +1 |    +1 |    +1 |     +0 |
 //!
-//! So the guarantee is *one token per byte, plus at most one for the opening word*
-//! — a constant, not anything that grows with the payload, and longer values
-//! amortise it away. It can also go the other way: where the context already ends in
-//! a space, the value absorbs it and comes in a token under. `verify-alphabet.py`
-//! measures every one of these contexts in every family, and fails if any of them
-//! ever costs more than one over.
+//! So the guarantee is *one token per byte, plus at most one for punctuation
+//! immediately before it* — a constant, never anything that scales with the payload,
+//! and negative where the context ends in a space the value absorbs.
+//!
+//! This is a property of the table rather than a happy accident, and it was not free.
+//! 0.2.0 shipped an alphabet in which 22 entries cost two or three tokens bare, so a
+//! value beginning with `council` cost N+2 at the start of a string — and its
+//! verifier tested one payload whose opening word happened to be cheap. Both the
+//! table and the sweep are fixed. The sweep is why the claim above needs no list of
+//! exceptions.
+//!
+//! ## What it costs against the alternatives
+//!
+//! Hex is what this replaces, but it is not the only encoding available, and against
+//! the compact ones the picture is mixed. Mean marginal tokens over 64 deterministic
+//! 32-byte payloads:
+//!
+//! | encoding    | GPT-4o | GPT-3.5/4 | GPT-2/3 | Claude | characters |
+//! |-------------|-------:|----------:|--------:|-------:|-----------:|
+//! | `unigram`   |   32.0 |      32.0 |    32.0 |   32.0 |        224 |
+//! | hex         |   37.4 |      37.2 |    38.9 |   42.6 |         64 |
+//! | base64url   |   29.9 |      31.2 |    33.6 |   41.3 |         43 |
+//! | base58      |   30.5 |      32.6 |    33.7 |   42.1 |         44 |
+//!
+//! Read that honestly. Against hex this wins everywhere. Against base64url it loses
+//! by two tokens under GPT-4o, ties under GPT-3.5/4, and wins by nine under Claude,
+//! whose vocabulary has not memorised base64 fragments. And it is five times the
+//! characters of any of them, which matters in a terminal, a URL, or a database
+//! column, and not at all in a context window.
+//!
+//! What no other row has is the flat column. Every value of a given width costs
+//! exactly the same, so a budget is known before the value is minted, where every
+//! alternative must be provisioned for its worst case. That, and being readable, is
+//! what is bought here. It is not the lowest mean.
+//!
+//! ## The alphabet
+//!
+//! 256 entries of lowercase ASCII English, 4 to 10 characters, under five
+//! constraints:
+//!
+//! - **One token, space-prefixed and bare,** under every tokenizer the verifier pins:
+//!   OpenAI's `r50k_base`, `p50k_base`, `cl100k_base`, and `o200k_base`; the
+//!   `hf-internal-testing/llama-tokenizer` SentencePiece artifact at revision
+//!   `d02ad6cb`; and `ctok` 1.0.0's `"5.0"` counter, an *unofficial* offline
+//!   reconstruction of Claude's tokenizer rather than Anthropic's own. Those exact
+//!   artifacts are the claim — not every past or future model sharing a name, and in
+//!   particular not Llama 3, which tokenizes with tiktoken rather than the
+//!   SentencePiece model checked here.
+//! - **No two entries within one character edit, and none a prefix or a
+//!   suffix-derivative of another.** A slipped character, a dropped suffix, or a
+//!   completed word lands outside the alphabet rather than on a different valid entry.
+//!   See "What the alphabet cannot do" for the limit of this.
+//! - **Nothing charged** — no death, violence, race, gender, religion, or politics.
+//!   These strings surface unbidden in transcripts, logs, and user-facing errors.
+//! - **No function words.** A value made of `that`, `which`, and `would` reads as
+//!   damaged prose rather than as a name.
+//! - **Frozen**, which is the next section.
+//!
+//! ## What the alphabet cannot do
+//!
+//! All 256 symbols are occupied, so **every sequence of alphabet words is a valid
+//! value**. A word replaced by another alphabet word, dropped, repeated, or
+//! transposed yields a clean decode to different bytes, and nothing in the alphabet
+//! can notice. No arrangement of the table changes that; it is what having no spare
+//! symbols means.
+//!
+//! The constraints above are therefore *risk reduction*, not detection. Requiring a
+//! character edit of at least two, and forbidding prefix and suffix relationships,
+//! makes it unlikely that a small textual slip lands on another valid word. It does
+//! not make it noticeable when one does.
+//!
+//! [`CheckedUnigramId`] is the part that detects. One extra word carries a CRC-8 over
+//! the payload, catching every single-word substitution and transposition outright,
+//! and an arbitrary accidental mutation with probability about 255/256. It detects
+//! accidents, not tampering: anyone who can change the payload can recompute the
+//! check word, so a hostile party calls for a keyed MAC over the bytes instead.
 //!
 //! ## Why the join is a space
 //!
@@ -92,7 +164,7 @@
 //! value that came back hyphenated, re-wrapped across lines, comma-joined, quoted, or
 //! shouted still yields the bytes that were sent. That is what belongs where a value
 //! is being retrieved from prose a model produced, and nowhere else — note that under
-//! it, `home page` is a perfectly valid encoded value, because both are alphabet
+//! it, `error message` is a perfectly valid encoded value, because both are alphabet
 //! words.
 //!
 //! Both are exact in what they return: an unknown word is refused and named, never
@@ -196,7 +268,7 @@ use std::fmt;
 /// Bumped only when [`ALPHABET`] changes, which changes what every previously issued
 /// value decodes to. Nothing in an encoded value carries this, so a system storing
 /// values must record it alongside them.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// The 256-word alphabet, sorted, indexed by the byte each word encodes.
 ///
@@ -217,35 +289,34 @@ pub const FORMAT_VERSION: u32 = 2;
 /// tokenizer families.
 #[rustfmt::skip]
 pub const ALPHABET: [&str; 256] = [
-    "access", "account", "action", "address", "album", "android", "application", "area", "array",
-    "article", "association", "author", "award", "background", "band", "black", "board", "body",
-    "border", "break", "build", "business", "button", "call", "card", "career", "category",
-    "census", "center", "central", "century", "change", "character", "check", "city", "class",
-    "click", "client", "close", "club", "code", "college", "color", "column", "command", "common",
-    "community", "company", "components", "console", "container", "content", "control", "council",
-    "count", "country", "course", "data", "database", "density", "department", "description",
-    "design", "development", "device", "director", "display", "district", "division", "document",
-    "door", "double", "download", "early", "education", "element", "email", "error", "events",
-    "example", "export", "express", "face", "features", "field", "film", "first", "float", "font",
-    "food", "football", "force", "form", "format", "function", "future", "games", "general",
-    "green", "group", "head", "height", "help", "high", "history", "home", "host", "house",
-    "households", "images", "import", "important", "income", "index", "info", "information",
-    "input", "install", "island", "king", "label", "language", "large", "league", "length", "level",
-    "library", "license", "life", "light", "list", "local", "location", "login", "love",
-    "management", "march", "market", "master", "material", "math", "median", "members", "message",
-    "method", "million", "models", "module", "money", "month", "music", "network", "news", "north",
-    "note", "number", "object", "office", "options", "package", "page", "park", "password",
-    "people", "period", "person", "places", "play", "population", "port", "position", "power",
-    "press", "price", "print", "println", "process", "production", "products", "program", "project",
-    "property", "published", "query", "question", "range", "records", "references", "region",
-    "register", "render", "report", "request", "research", "response", "results", "return",
-    "review", "river", "role", "room", "router", "school", "science", "score", "script", "search",
-    "season", "section", "select", "send", "series", "services", "session", "share", "social",
-    "society", "software", "song", "source", "south", "space", "span", "species", "square",
-    "station", "story", "street", "string", "students", "study", "style", "success", "system",
-    "table", "target", "task", "team", "television", "template", "title", "token", "track", "train",
-    "union", "university", "update", "username", "users", "version", "video", "village", "website",
-    "width", "window", "world",
+    "access", "account", "action", "active", "added", "address", "album", "align", "android",
+    "append", "area", "args", "array", "article", "author", "available", "background", "band",
+    "based", "black", "board", "body", "books", "border", "born", "break", "building", "built",
+    "button", "called", "card", "case", "category", "center", "central", "change", "character",
+    "check", "children", "city", "class", "click", "client", "close", "club", "code", "color",
+    "column", "command", "common", "community", "company", "component", "config", "console",
+    "const", "container", "content", "control", "country", "course", "created", "current",
+    "database", "date", "days", "default", "define", "design", "details", "device", "display",
+    "document", "door", "double", "download", "east", "element", "email", "error", "events",
+    "example", "export", "express", "external", "face", "false", "family", "father", "features",
+    "field", "files", "film", "final", "find", "float", "font", "football", "force", "format",
+    "found", "free", "function", "game", "general", "github", "global", "google", "green", "group",
+    "header", "height", "help", "high", "history", "home", "house", "https", "human", "images",
+    "import", "include", "index", "input", "install", "items", "json", "label", "language", "large",
+    "length", "level", "library", "light", "links", "local", "location", "login", "market",
+    "master", "match", "material", "media", "members", "message", "method", "models", "module",
+    "month", "music", "named", "network", "number", "object", "office", "online", "options",
+    "original", "output", "package", "params", "password", "people", "period", "person", "place",
+    "player", "points", "position", "power", "press", "price", "println", "private", "process",
+    "product", "program", "project", "property", "public", "python", "query", "question", "random",
+    "range", "react", "record", "region", "register", "related", "release", "render", "report",
+    "request", "require", "response", "results", "return", "review", "river", "route", "running",
+    "school", "score", "script", "search", "season", "section", "security", "select", "series",
+    "server", "service", "session", "share", "social", "software", "source", "space", "special",
+    "species", "split", "square", "start", "states", "static", "station", "story", "street",
+    "string", "student", "style", "success", "support", "system", "table", "target", "template",
+    "title", "token", "track", "training", "types", "union", "update", "username", "users",
+    "values", "version", "video", "views", "water", "width", "window", "words", "world"
 ];
 
 /// An identifier of `N` bytes, rendered as `N` alphabet words.
@@ -288,7 +359,10 @@ impl<const N: usize> UnigramId<N> {
     /// This is the parser for a boundary where the value is about to be trusted. For
     /// a value being retrieved out of text a model wrote, see [`UnigramId::recover`].
     pub fn parse(text: &str) -> Result<Self, ParseError> {
-        Self::from_vec(decode(text)?)
+        if text.is_empty() {
+            return Err(DecodeError::Empty.into());
+        }
+        collect_exact(canonical_bytes(text)).map(Self)
     }
 
     /// Parse **tolerantly**, forgiving the reformatting a round trip through a model
@@ -298,7 +372,7 @@ impl<const N: usize> UnigramId<N> {
     /// ignored. Correspondingly liberal about what it will call a value: `home page`
     /// parses. Use [`UnigramId::parse`] anywhere that matters.
     pub fn recover(text: &str) -> Result<Self, ParseError> {
-        Self::from_vec(decode_recovered(text)?)
+        collect_exact(recovered_bytes(text)).map(Self)
     }
 
     /// The bytes this identifier carries.
@@ -313,15 +387,6 @@ impl<const N: usize> UnigramId<N> {
     /// Consume the identifier, yielding its bytes.
     pub const fn into_bytes(self) -> [u8; N] {
         self.0
-    }
-
-    fn from_vec(bytes: Vec<u8>) -> Result<Self, ParseError> {
-        <[u8; N]>::try_from(bytes.as_slice())
-            .map(Self)
-            .map_err(|_| ParseError::WrongLength {
-                expected: N,
-                found: bytes.len(),
-            })
     }
 }
 
@@ -347,6 +412,127 @@ impl<const N: usize> From<[u8; N]> for UnigramId<N> {
 impl<const N: usize> From<UnigramId<N>> for [u8; N] {
     fn from(id: UnigramId<N>) -> Self {
         id.0
+    }
+}
+
+/// CRC-8, the polynomial from SMBus/ATM (`x^8 + x^2 + x + 1`).
+///
+/// Position-dependent by construction, which is what makes it catch the mutations
+/// an alphabet cannot: a word swapped for another valid word, two words
+/// transposed, a word dropped or repeated. A plain XOR or sum would miss every
+/// reordering.
+const fn crc8(bytes: &[u8]) -> u8 {
+    let mut crc: u8 = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        crc ^= bytes[index];
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 0x80 != 0 {
+                (crc << 1) ^ 0x07
+            } else {
+                crc << 1
+            };
+            bit += 1;
+        }
+        index += 1;
+    }
+    crc
+}
+
+/// An identifier of `N` bytes carrying a trailing check word, rendered as `N + 1`
+/// alphabet words.
+///
+/// [`UnigramId`] cannot detect a mutation from one alphabet word to another,
+/// because all 256 symbols are occupied and every word sequence is a valid value.
+/// The alphabet's edit-distance and suffix rules lower the odds of a small textual
+/// slip producing a different valid word; they cannot detect one that does. This
+/// type can. One extra word is 8 bits of CRC, so an arbitrary accidental mutation
+/// is caught with probability about 255/256, and every single-word substitution or
+/// transposition is caught outright.
+///
+/// It detects accidents, not tampering. Anyone who can change the payload can
+/// recompute the check word, so a value that must survive a hostile party wants a
+/// keyed MAC over [`CheckedUnigramId::as_bytes`], which this crate does not provide.
+///
+/// ```
+/// use unigram::{CheckedUnigramId, ParseError};
+///
+/// let id = CheckedUnigramId::from_bytes([1u8, 2, 3, 4]);
+/// let text = id.to_string();
+/// assert_eq!(text.split(' ').count(), 5);          // four payload words, one check
+/// assert_eq!(CheckedUnigramId::<4>::parse(&text).unwrap(), id);
+///
+/// // Swap one word for another valid word: caught, where UnigramId could not.
+/// let mangled = text.replacen("account", "action", 1);
+/// assert!(matches!(
+///     CheckedUnigramId::<4>::parse(&mangled),
+///     Err(ParseError::ChecksumMismatch { .. })
+/// ));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CheckedUnigramId<const N: usize>([u8; N]);
+
+impl<const N: usize> CheckedUnigramId<N> {
+    /// Wrap bytes that are already in hand. The check word is derived, never stored.
+    pub const fn from_bytes(bytes: [u8; N]) -> Self {
+        Self(bytes)
+    }
+
+    /// Mint `N` bytes of fresh entropy from the OS CSPRNG.
+    pub fn try_random() -> Result<Self, getrandom::Error> {
+        UnigramId::<N>::try_random().map(|id| Self(id.into_bytes()))
+    }
+
+    /// Parse the canonical form and verify the check word.
+    pub fn parse(text: &str) -> Result<Self, ParseError> {
+        if text.is_empty() {
+            return Err(DecodeError::Empty.into());
+        }
+        Self::verify(collect_checked(canonical_bytes(text))?)
+    }
+
+    /// Parse tolerantly and verify the check word.
+    ///
+    /// The pairing worth noting: tolerant parsing is what lets a value survive a
+    /// round trip, and the check word is what keeps that tolerance from quietly
+    /// accepting a value the trip changed.
+    pub fn recover(text: &str) -> Result<Self, ParseError> {
+        Self::verify(collect_checked(recovered_bytes(text))?)
+    }
+
+    /// The bytes this identifier carries, without the check word.
+    pub const fn as_bytes(&self) -> &[u8; N] {
+        &self.0
+    }
+
+    /// Consume the identifier, yielding its bytes.
+    pub const fn into_bytes(self) -> [u8; N] {
+        self.0
+    }
+
+    /// The check byte this payload computes.
+    pub const fn check_byte(&self) -> u8 {
+        crc8(&self.0)
+    }
+
+    fn verify((payload, found): ([u8; N], u8)) -> Result<Self, ParseError> {
+        let expected = crc8(&payload);
+        if expected != found {
+            return Err(ParseError::ChecksumMismatch { expected, found });
+        }
+        Ok(Self(payload))
+    }
+}
+
+impl<const N: usize> fmt::Display for CheckedUnigramId<N> {
+    /// `N` payload words, then the check word, joined by single spaces.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            f.write_str(ALPHABET[*byte as usize])?;
+            f.write_str(" ")?;
+        }
+        f.write_str(ALPHABET[self.check_byte() as usize])
     }
 }
 
@@ -398,6 +584,9 @@ pub enum ParseError {
     Decode(DecodeError),
     /// The words decoded, but there were the wrong number of them.
     WrongLength { expected: usize, found: usize },
+    /// Every word was an alphabet entry and the count was right, but the trailing
+    /// check word does not match the payload. See [`CheckedUnigramId`].
+    ChecksumMismatch { expected: u8, found: u8 },
 }
 
 impl fmt::Display for ParseError {
@@ -407,6 +596,11 @@ impl fmt::Display for ParseError {
             Self::WrongLength { expected, found } => {
                 write!(f, "expected {expected} words, found {found}")
             }
+            Self::ChecksumMismatch { expected, found } => write!(
+                f,
+                "check word is `{}`, but the payload computes `{}`",
+                ALPHABET[*found as usize], ALPHABET[*expected as usize]
+            ),
         }
     }
 }
@@ -415,7 +609,7 @@ impl std::error::Error for ParseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Decode(error) => Some(error),
-            Self::WrongLength { .. } => None,
+            Self::WrongLength { .. } | Self::ChecksumMismatch { .. } => None,
         }
     }
 }
@@ -446,6 +640,142 @@ pub fn encode(bytes: &[u8]) -> String {
     out
 }
 
+/// At most this much of an offending word is repeated back in a [`DecodeError`].
+///
+/// The word comes from whatever arrived, so it is attacker-shaped: unbounded, and
+/// free to contain newlines or control characters that would rearrange a log line.
+/// Errors are for reading, so it is truncated and escaped.
+const WORD_PREVIEW: usize = 32;
+
+fn preview(word: &str) -> String {
+    let mut out = String::with_capacity(WORD_PREVIEW);
+    for character in word.chars().take(WORD_PREVIEW) {
+        match character {
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    if word.chars().nth(WORD_PREVIEW).is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// Why a word that is not a canonical entry is not one.
+///
+/// Distinguishing these is the point: a value spelled differently is a caller to
+/// correct, and a word that is nothing at all is a value to reject.
+fn classify(word: &str, position: usize) -> DecodeError {
+    // An empty segment means the spacing was wrong -- leading, trailing, or
+    // repeated spaces -- rather than that some word was unrecognisable.
+    if word.is_empty() {
+        return DecodeError::NotCanonical { position };
+    }
+    if word.is_ascii()
+        && ALPHABET
+            .binary_search(&word.to_ascii_lowercase().as_str())
+            .is_ok()
+    {
+        return DecodeError::NotCanonical { position };
+    }
+    // Every piece of it is an alphabet word, so what is wrong is the separator
+    // holding them together, not the words.
+    let mut pieces = recovered_words(word).peekable();
+    if pieces.peek().is_some()
+        && pieces.all(|piece| {
+            ALPHABET
+                .binary_search(&piece.to_ascii_lowercase().as_str())
+                .is_ok()
+        })
+    {
+        return DecodeError::NotCanonical { position };
+    }
+    DecodeError::UnknownWord {
+        position,
+        word: preview(word),
+    }
+}
+
+fn recovered_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|word| !word.is_empty())
+}
+
+/// The bytes of a canonical rendering, one at a time.
+fn canonical_bytes(text: &str) -> impl Iterator<Item = Result<u8, DecodeError>> + '_ {
+    text.split(' ')
+        .enumerate()
+        .map(|(position, word)| match ALPHABET.binary_search(&word) {
+            Ok(index) => Ok(index as u8),
+            Err(_) => Err(classify(word, position)),
+        })
+}
+
+/// The bytes of a tolerantly-read rendering, one at a time.
+fn recovered_bytes(text: &str) -> impl Iterator<Item = Result<u8, DecodeError>> + '_ {
+    recovered_words(text).enumerate().map(|(position, word)| {
+        let lowered = word.to_ascii_lowercase();
+        match ALPHABET.binary_search(&lowered.as_str()) {
+            Ok(index) => Ok(index as u8),
+            Err(_) => Err(DecodeError::UnknownWord {
+                position,
+                word: preview(word),
+            }),
+        }
+    })
+}
+
+/// Read exactly `N` bytes from a stream of them.
+///
+/// Never holds more than `N` bytes, whatever arrives: a value that is too long is
+/// counted to the end but stored only up to `N`, so an enormous input costs time
+/// rather than memory. That is most of the point of knowing the width up front.
+fn collect_exact<const N: usize>(
+    stream: impl Iterator<Item = Result<u8, DecodeError>>,
+) -> Result<[u8; N], ParseError> {
+    let mut out = [0u8; N];
+    let mut found = 0usize;
+    for byte in stream {
+        let byte = byte?;
+        if let Some(slot) = out.get_mut(found) {
+            *slot = byte;
+        }
+        found += 1;
+    }
+    if found != N {
+        return Err(ParseError::WrongLength { expected: N, found });
+    }
+    Ok(out)
+}
+
+/// Read `N` payload bytes and one trailing check byte, holding no more than that.
+///
+/// Split out from [`collect_exact`] rather than asking for `N + 1`, which stable
+/// Rust cannot express as an array width.
+fn collect_checked<const N: usize>(
+    stream: impl Iterator<Item = Result<u8, DecodeError>>,
+) -> Result<([u8; N], u8), ParseError> {
+    let mut payload = [0u8; N];
+    let mut check = 0u8;
+    let mut found = 0usize;
+    for byte in stream {
+        let byte = byte?;
+        if let Some(slot) = payload.get_mut(found) {
+            *slot = byte;
+        } else if found == N {
+            check = byte;
+        }
+        found += 1;
+    }
+    if found != N + 1 {
+        return Err(ParseError::WrongLength {
+            expected: N + 1,
+            found,
+        });
+    }
+    Ok((payload, check))
+}
+
 /// Decode the **canonical** form: lowercase alphabet words joined by single spaces.
 ///
 /// Exactly one accepted spelling per value, which is what makes this the parser to
@@ -455,25 +785,7 @@ pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
     if text.is_empty() {
         return Err(DecodeError::Empty);
     }
-    let mut bytes = Vec::new();
-    for (position, word) in text.split(' ').enumerate() {
-        match ALPHABET.binary_search(&word) {
-            Ok(index) => bytes.push(index as u8),
-            // Distinguish "would have decoded, spelled differently" from "not a word
-            // at all": the first is a caller sending a non-canonical form, the second
-            // is a bad value, and they call for different responses.
-            Err(_) if decodes_ignoring_case(word) => {
-                return Err(DecodeError::NotCanonical { position })
-            }
-            Err(_) => {
-                return Err(DecodeError::UnknownWord {
-                    position,
-                    word: word.to_string(),
-                })
-            }
-        }
-    }
-    Ok(bytes)
+    canonical_bytes(text).collect()
 }
 
 /// Decode **tolerantly**, forgiving the reformatting a round trip introduces.
@@ -482,39 +794,20 @@ pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
 /// ignored, so a value that came back hyphenated, re-wrapped across lines,
 /// comma-joined, quoted, or shouted still yields the bytes that were sent.
 ///
-/// Being this liberal is what lets a value survive the trip; it is also why this must
-/// not be the parser at a trust boundary. Under it, `home page` is a valid encoded
-/// value, since both are alphabet words. Use [`decode`] where that matters.
+/// It reads the whole of what it is given, so it recovers a value that has been
+/// *reformatted*, not one embedded in a sentence: every word present must be an
+/// alphabet word. Isolate the candidate first.
+///
+/// Being this liberal is also why this must not be the parser at a trust boundary.
+/// Under it, `error message` is a valid encoded value, since both are alphabet
+/// words. Use [`decode`] where that matters, and [`CheckedUnigramId`] where a value
+/// needs to prove it is one.
 pub fn decode_recovered(text: &str) -> Result<Vec<u8>, DecodeError> {
-    let mut bytes = Vec::new();
-    for (position, word) in text
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .filter(|word| !word.is_empty())
-        .enumerate()
-    {
-        let lowered = word.to_ascii_lowercase();
-        match ALPHABET.binary_search(&lowered.as_str()) {
-            Ok(index) => bytes.push(index as u8),
-            Err(_) => {
-                return Err(DecodeError::UnknownWord {
-                    position,
-                    word: word.to_string(),
-                })
-            }
-        }
-    }
+    let bytes: Vec<u8> = recovered_bytes(text).collect::<Result<_, _>>()?;
     if bytes.is_empty() {
         return Err(DecodeError::Empty);
     }
     Ok(bytes)
-}
-
-/// Whether a word is an alphabet entry in some other case.
-fn decodes_ignoring_case(word: &str) -> bool {
-    word.is_ascii()
-        && ALPHABET
-            .binary_search(&word.to_ascii_lowercase().as_str())
-            .is_ok()
 }
 
 /// Mint `bytes` bytes of fresh entropy, encoded.
@@ -555,7 +848,7 @@ mod tests {
     /// while the suite stays green.
     #[test]
     fn the_alphabet_matches_its_frozen_digest() {
-        const FROZEN: u64 = 0x1771_3c01_9799_607a;
+        const FROZEN: u64 = 0x3e7c_f24c_a1a4_56f6;
         const PRIME: u64 = 0x0000_0100_0000_01b3;
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for (index, word) in ALPHABET.iter().enumerate() {
@@ -725,17 +1018,17 @@ mod tests {
     /// is the price of that parser, and a caller reaching for it should know.
     #[test]
     fn recovery_accepts_ordinary_prose_made_of_alphabet_words() {
-        assert!(decode_recovered("home page").is_ok());
-        assert!(decode("home page").is_ok());
+        assert!(decode_recovered("error message").is_ok());
+        assert!(decode("error message").is_ok());
     }
 
     #[test]
     fn an_id_round_trips_through_its_canonical_rendering() {
         let id = UnigramId::from_bytes([0x3d, 0x9a, 0x00, 0xff]);
-        assert_eq!(id.to_string(), "description note access world");
+        assert_eq!(id.to_string(), "created office access world");
         assert_eq!(UnigramId::<4>::parse(&id.to_string()).unwrap(), id);
         assert_eq!(
-            UnigramId::<4>::recover("DESCRIPTION-NOTE-ACCESS-WORLD").unwrap(),
+            UnigramId::<4>::recover("CREATED-OFFICE-ACCESS-WORLD").unwrap(),
             id
         );
         assert_eq!(id.as_bytes(), &[0x3d, 0x9a, 0x00, 0xff]);
@@ -777,6 +1070,140 @@ mod tests {
         let minted = try_mint(4).unwrap();
         assert_eq!(minted.split(' ').count(), 4, "{minted}");
         assert_eq!(decode(&minted).unwrap().len(), 4);
+    }
+
+    /// The check word is what turns "we made a valid word unlikely" into "we would
+    /// notice". Every one of these mutations decodes fine as a plain UnigramId and
+    /// yields the wrong bytes silently.
+    #[test]
+    fn the_check_word_catches_mutations_the_alphabet_cannot() {
+        let id = CheckedUnigramId::from_bytes([17u8, 42, 200, 7]);
+        let text = id.to_string();
+        assert_eq!(text.split(' ').count(), 5);
+        assert_eq!(CheckedUnigramId::<4>::parse(&text).unwrap(), id);
+        assert_eq!(id.as_bytes(), &[17u8, 42, 200, 7]);
+
+        let words: Vec<&str> = text.split(' ').collect();
+        let other = if words[0] == ALPHABET[0] {
+            ALPHABET[1]
+        } else {
+            ALPHABET[0]
+        };
+        let substituted = std::iter::once(other)
+            .chain(words[1..].iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let transposed = {
+            let mut w = words.clone();
+            w.swap(0, 1);
+            w.join(" ")
+        };
+        for mutation in [substituted, transposed] {
+            // The same five words, read as a plain five-byte id, are perfectly
+            // valid and yield the wrong bytes without complaint. That is the whole
+            // problem, and it is not fixable inside the alphabet.
+            assert!(UnigramId::<5>::parse(&mutation).is_ok(), "{mutation}");
+            assert!(
+                matches!(
+                    CheckedUnigramId::<4>::parse(&mutation),
+                    Err(ParseError::ChecksumMismatch { .. })
+                ),
+                "{mutation}"
+            );
+        }
+
+        // A dropped word changes the count before the checksum is even reached.
+        assert!(matches!(
+            CheckedUnigramId::<4>::parse(&words[1..].join(" ")),
+            Err(ParseError::WrongLength { .. })
+        ));
+    }
+
+    /// Every single-word substitution is caught, at every position -- swept
+    /// exhaustively rather than argued from the 255/256 average.
+    #[test]
+    fn a_single_word_substitution_is_always_caught() {
+        let id = CheckedUnigramId::from_bytes([3u8, 141, 92, 7, 220, 18]);
+        let text = id.to_string();
+        let words: Vec<&str> = text.split(' ').collect();
+        for position in 0..words.len() {
+            for replacement in ALPHABET {
+                if replacement == words[position] {
+                    continue;
+                }
+                let mut mutated = words.clone();
+                mutated[position] = replacement;
+                assert!(
+                    CheckedUnigramId::<6>::parse(&mutated.join(" ")).is_err(),
+                    "substituting `{replacement}` at {position} went unnoticed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_checked_value_survives_the_mangling_a_round_trip_introduces() {
+        let id: CheckedUnigramId<4> = CheckedUnigramId::try_random().unwrap();
+        let text = id.to_string();
+        assert_eq!(
+            CheckedUnigramId::<4>::recover(&text.to_uppercase().replace(' ', " - ")).unwrap(),
+            id
+        );
+    }
+
+    /// Non-canonical spacing and separators are reported as such, rather than as an
+    /// unrecognisable word, because the two call for different responses.
+    #[test]
+    fn spacing_and_separator_faults_are_reported_as_non_canonical() {
+        let good = encode(&[1, 2]);
+        for text in [
+            format!(" {good}"),
+            format!("{good} "),
+            good.replace(' ', "  "),
+            good.replace(' ', "-"),
+            good.to_uppercase(),
+        ] {
+            assert!(
+                matches!(decode(&text), Err(DecodeError::NotCanonical { .. })),
+                "`{text}` gave {:?}",
+                decode(&text)
+            );
+        }
+        // A word that is nothing at all is still an unknown word.
+        assert!(matches!(
+            decode("account zzzz"),
+            Err(DecodeError::UnknownWord { .. })
+        ));
+    }
+
+    /// An offending word is attacker-shaped, so it is truncated and escaped before
+    /// it reaches a log line.
+    #[test]
+    fn an_unknown_word_is_previewed_not_echoed() {
+        let huge = "q".repeat(10_000);
+        let Err(DecodeError::UnknownWord { word, .. }) = decode(&huge) else {
+            panic!("expected an unknown word");
+        };
+        assert!(word.chars().count() <= WORD_PREVIEW + 1, "{}", word.len());
+
+        let Err(DecodeError::UnknownWord { word, .. }) = decode("qqq\u{7}qqq") else {
+            panic!("expected an unknown word");
+        };
+        assert!(!word.contains('\u{7}'), "{word}");
+    }
+
+    /// Parsing a fixed width must not size its working memory to its input, or an
+    /// enormous value costs memory instead of just time.
+    #[test]
+    fn a_fixed_width_parse_reports_the_true_length_of_an_overlong_value() {
+        let long = encode(&vec![1u8; 5_000]);
+        assert_eq!(
+            UnigramId::<4>::parse(&long),
+            Err(ParseError::WrongLength {
+                expected: 4,
+                found: 5_000
+            })
+        );
     }
 
     /// Neither parser may panic, whatever arrives.

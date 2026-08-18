@@ -3,11 +3,11 @@
 A bijective codec between bytes and words that cost exactly one LLM token.
 
 ```text
-a14ed61a                          ->  park events share category
+a14ed61a                          ->  password email share building
 
-8623a771b764ce50bb85371ff65aebe9  ->  love class play index query head search
-                                      export references login country change
-                                      update football target system
+8623a771b764ce50bb85371ff65aebe9  ->  links change points high random found
+                                      season events region light const case
+                                      users field table support
 ```
 
 An identifier becomes something you can read. Say it out loud, carry it across a room
@@ -15,22 +15,23 @@ or between two windows, tell it apart from its neighbour at a glance, recognise 
 again an hour later — the ordinary things a name affords. Ids spend their lives in
 prompts, logs, and error messages, being looked at; this makes that free.
 
-It is also the densest byte-aligned form the trip allows. One word is one byte and one
-token, so a value costs exactly as many tokens as it carries bytes — flat, for every
-value, with the spaces between words costing nothing at all. The four words above
-carry 32 bits in 4 tokens; the sixteen carry 128 in 16.
+One word is one byte and one token, so a value costs exactly as many tokens as it
+carries bytes — flat, for every value, with the spaces between words costing nothing.
+The four words above carry 32 bits in 4 tokens; the sixteen carry 128 in 16.
 
 ## Using it
 
 ```rust
-use unigram::UnigramId;
+use unigram::{UnigramId, CheckedUnigramId};
 
 let id: UnigramId<4> = UnigramId::try_random()?;   // 32 fresh bits, 4 tokens
-println!("{id}");                                  // "park events share category"
+println!("{id}");                                  // "password email share building"
 
 let returned = UnigramId::<4>::parse(&text)?;      // canonical: exact
 let salvaged = UnigramId::<4>::recover(&text)?;    // tolerant: forgives a round trip
-assert_eq!(id.as_bytes().len(), 4);
+
+// One extra word of CRC-8, when a mutated value must not pass as a valid one.
+let checked: CheckedUnigramId<4> = CheckedUnigramId::try_random()?;
 ```
 
 The bytes are the value; the words are how it is displayed and parsed. Holding it that
@@ -50,12 +51,30 @@ check.
 
 `recover` is **tolerant**: any run of non-letters separates words, and case is
 ignored. A value that came back hyphenated, re-wrapped, comma-joined, quoted, or
-shouted still yields the bytes that were sent. That belongs where a value is being
-pulled out of prose a model wrote, and nowhere else — under it, `home page` is a valid
-encoded value, because both are alphabet words.
+shouted still yields the bytes that were sent.
 
-Both are exact in what they return: an unknown word is refused and named, never
-skipped or guessed at.
+It reads *all* of what it is given, so it recovers a value that has been reformatted,
+not one embedded in a sentence — every word present must be an alphabet word. Isolate
+the candidate first. And under it `error message` is a valid encoded value, because
+both are alphabet words, which is why it must not be the parser at a trust boundary.
+
+### What the alphabet cannot do
+
+All 256 symbols are occupied, so **every sequence of alphabet words is a valid
+value**. A word swapped for another alphabet word, dropped, repeated, or transposed
+decodes cleanly to different bytes, and nothing in the table can notice. No
+arrangement of it changes that; it is what having no spare symbols means.
+
+The alphabet's constraints — a character edit of at least two between entries, no
+prefixes, no suffix-derivatives — are *risk reduction*, not detection. They make it
+unlikely that a small slip lands on another valid word. They cannot make it noticeable
+when one does.
+
+`CheckedUnigramId` is the part that detects. One extra word carries a CRC-8 over the
+payload, catching every single-word substitution and transposition outright, and an
+arbitrary accidental mutation with probability about 255/256. It detects accidents,
+not tampering: anyone who can change the payload can recompute the check word, so a
+hostile party calls for a keyed MAC over the bytes.
 
 ## What it costs
 
@@ -77,25 +96,51 @@ payloads per size, so the right-hand column is a sample maximum, not a proven bo
 The margin narrows under the GPT-4 vocabularies, where 32 bytes of hex average 37.1,
 and widens sharply under Llama's SentencePiece, at 58.2 against the same flat 32.
 
-### The exception worth knowing
+### Every context, swept
 
-One token per byte is exact for every word a space precedes — every word but the
-first. The **opening** word costs one extra token when the character before it is not
-a space. For a 4-byte value, against an ideal of 4:
+One token per byte holds space-prefixed **and bare**, so a value costs exactly N at
+the start of a string, after a space, in JSON, and mid-sentence. The only surcharge is
+punctuation immediately before it. Measured for a 4-byte value against an ideal of 4,
+sweeping **all 256 entries** through the opening and closing positions, worst kept:
 
-| context          | GPT-4o | GPT-3.5/4 | GPT-2/3 | Llama | Claude |
-|------------------|-------:|----------:|--------:|------:|-------:|
-| start of string  |      4 |         4 |       4 |     4 |      4 |
-| in prose, `X.`   |      4 |         4 |       4 |     4 |      4 |
-| after `id: `     |      3 |         3 |       3 |     3 |      4 |
-| after a newline  |      4 |         4 |       4 |     4 |      5 |
-| JSON `"id":"X"`  |      3 |         4 |       4 |     4 |      5 |
-| markdown `` `X` ``|     5 |         5 |       5 |     5 |      4 |
-| after `(`        |      5 |         5 |       5 |     5 |      4 |
+| context          | GPT-4o | GPT-3.5/4 | GPT-3 | GPT-2 | Llama | Claude |
+|------------------|-------:|----------:|------:|------:|------:|-------:|
+| start of string  |     +0 |        +0 |    +0 |    +0 |    +0 |     +0 |
+| in prose, `X.`   |     +0 |        +0 |    +0 |    +0 |    +0 |     +0 |
+| JSON `"id":"X"`  |     −1 |        +0 |    +0 |    +0 |    +0 |     +1 |
+| after a newline  |     +0 |        +0 |    +0 |    +0 |    +0 |     +1 |
+| after `id: `     |     −1 |        −1 |    −1 |    −1 |    −1 |     +0 |
+| markdown `` `X` ``|    +1 |        +1 |    +1 |    +1 |    +1 |     +0 |
+| after `(`        |     +1 |        +1 |    +1 |    +1 |    +1 |     +0 |
 
-So the guarantee is *one token per byte, plus at most one for the opening word* — a
-constant, not something that grows with the payload. Where the context already ends in
-a space, the value absorbs it and comes in a token under.
+So: *one token per byte, plus at most one for punctuation immediately before it* — a
+constant, never scaling with the payload, and negative where the context ends in a
+space the value absorbs.
+
+That is a property of the table, and it was not free. 0.2.0 shipped 22 entries costing
+two or three tokens bare, so a value opening with `council` cost N+2 at the start of a
+string — and its verifier tested one payload whose opening word happened to be cheap.
+Both are fixed. The sweep is why the claim needs no exception list.
+
+### Against the alternatives, not just hex
+
+Mean marginal tokens over 64 deterministic 32-byte payloads:
+
+| encoding    | GPT-4o | GPT-3.5/4 | GPT-2/3 | Claude | characters |
+|-------------|-------:|----------:|--------:|-------:|-----------:|
+| `unigram`   |   32.0 |      32.0 |    32.0 |   32.0 |        224 |
+| hex         |   37.4 |      37.2 |    38.9 |   42.6 |         64 |
+| base64url   |   29.9 |      31.2 |    33.6 |   41.3 |         43 |
+| base58      |   30.5 |      32.6 |    33.7 |   42.1 |         44 |
+
+Against hex this wins everywhere. Against base64url it loses by two tokens under
+GPT-4o, ties under GPT-3.5/4, and wins by nine under Claude, whose vocabulary has not
+memorised base64 fragments. And it is five times the characters, which matters in a
+terminal, a URL, or a database column, and not at all in a context window.
+
+What no other row has is the flat column. Every value of a given width costs exactly
+the same, so a budget is known before the value is minted. That, and being readable,
+is what is bought here — not the lowest mean.
 
 ## Choosing a length
 
@@ -147,20 +192,22 @@ of those separators anyway, so a value that comes back joined differently is not
 
 ## The alphabet
 
-256 entries of lowercase ASCII English, 4 to 11 characters, chosen under five
-constraints:
+256 entries of lowercase ASCII English, 4 to 10 characters, under five constraints:
 
-- **One token** under Claude, GPT-2/3 (`r50k`, `p50k`), GPT-3.5/4 (`cl100k`), GPT-4o
-  (`o200k`), and Llama's SentencePiece — spanning both the BPE and SentencePiece
-  families.
-- **No two entries within one character edit of each other**, so a slipped character
-  lands outside the alphabet rather than on a different valid word.
-- **No entry reachable from another by adding or removing a suffix.** `build` and
-  `building` may not both be entries. A model regurgitating text is far likelier to
-  normalise a suffix than to mistype a character, which makes this the mutation worth
-  ruling out — and 0.1.x shipped with four such pairs before a test enforced it.
+- **One token, space-prefixed and bare,** under every tokenizer the verifier pins:
+  OpenAI's `r50k_base`, `p50k_base`, `cl100k_base`, `o200k_base`; the
+  `hf-internal-testing/llama-tokenizer` SentencePiece artifact at revision `d02ad6cb`;
+  and `ctok` 1.0.0's `"5.0"` counter, an **unofficial** offline reconstruction of
+  Claude's tokenizer rather than Anthropic's own. Those exact artifacts are the claim
+  — not every model that shares a name, and in particular not Llama 3, which
+  tokenizes with tiktoken rather than the SentencePiece model checked here.
+- **No two entries within one character edit, and none a prefix or suffix-derivative
+  of another.** A slipped character, a dropped suffix, or a completed word lands
+  outside the alphabet rather than on a different valid entry.
 - **Nothing charged** — no death, violence, race, gender, religion, or politics. These
   strings surface unbidden in transcripts, logs, and user-facing errors.
+- **No function words.** A value made of `that`, `which`, and `would` reads as damaged
+  prose rather than as a name.
 - **Frozen.** Byte `n` is `ALPHABET[n]`, all 256 slots are occupied, and changing an
   entry changes what every previously issued value decodes to. A test pins the table's
   digest. Nothing in an encoded value says which table produced it, so a system that
@@ -170,11 +217,15 @@ constraints:
 
 The crate depends on nothing but the OS CSPRNG, at runtime or under test, and never
 tokenizes. `cargo test` covers the codec and the table's structure — sorted, unique,
-lengths, edit distance, suffix reachability, frozen digest. It says nothing about cost.
+lengths, edit distance, prefix and suffix relationships, the frozen digest, and an
+exhaustive sweep of every single-word substitution against the check word. It says
+nothing about cost.
 
 Every number on this page is printed by `verify-alphabet.py`, which reads the alphabet
-straight out of `src/lib.rs` and re-measures it against all five families, with
-dependencies and the tokenizer revision pinned exactly:
+straight out of `src/lib.rs`, re-measures every entry against all five families both
+space-prefixed and bare, and sweeps all 256 entries through the opening and closing
+positions of every context — with dependencies and the tokenizer revision pinned
+exactly:
 
 ```bash
 uv run verify-alphabet.py
