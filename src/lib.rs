@@ -74,27 +74,33 @@
 //!
 //! ## What it costs against the alternatives
 //!
-//! Hex is what this replaces, but it is not the only encoding available, and against
-//! the compact ones the picture is mixed. Mean marginal tokens over 64 deterministic
-//! 32-byte payloads:
+//! Hex is what this replaces, and it loses to `unigram` at every size in every family
+//! measured. The compact encodings are the real comparison, and there the answer
+//! depends on size. Mean marginal tokens saved, over 200 deterministic payloads per
+//! cell, ranged across all five tokenizers — positive means `unigram` is cheaper:
 //!
-//! | encoding    | GPT-4o | GPT-3.5/4 | GPT-2/3 | Claude | characters |
-//! |-------------|-------:|----------:|--------:|-------:|-----------:|
-//! | `unigram`   |   32.0 |      32.0 |    32.0 |   32.0 |        224 |
-//! | hex         |   37.4 |      37.2 |    38.9 |   42.6 |         64 |
-//! | base64url   |   29.9 |      31.2 |    33.6 |   41.3 |         43 |
-//! | base58      |   30.5 |      32.6 |    33.7 |   42.1 |         44 |
+//! | payload  | vs hex       | vs base64url | `unigram` characters |
+//! |----------|-------------:|-------------:|---------------------:|
+//! | 4 bytes  | +1.1 … +3.9  | +0.6 … +2.3  |                   27 |
+//! | 8 bytes  | +1.9 … +7.1  | +0.1 … +2.8  |                   55 |
+//! | 16 bytes | +3.2 … +13.4 | −0.7 … +5.3  |                  111 |
+//! | 32 bytes | +5.6 … +26.2 | −2.5 … +9.2  |                  224 |
 //!
-//! Read that honestly. Against hex this wins everywhere. Against base64url it loses
-//! by two tokens under GPT-4o, ties under GPT-3.5/4, and wins by nine under Claude,
-//! whose vocabulary has not memorised base64 fragments. And it is five times the
-//! characters of any of them, which matters in a terminal, a URL, or a database
-//! column, and not at all in a context window.
+//! At 4 bytes this beats hex, base64url, and base58 in every family, unqualified. At 8
+//! bytes it wins everywhere bar a tie with base58 under GPT-4o. base64url pulls ahead
+//! only at 16 bytes and above and only under the two newest GPT vocabularies, which
+//! have memorised base64 fragments — under Claude it loses by 5 to 9 tokens at those
+//! same sizes.
 //!
-//! What no other row has is the flat column. Every value of a given width costs
-//! exactly the same, so a budget is known before the value is minted, where every
-//! alternative must be provisioned for its worst case. That, and being readable, is
-//! what is bought here. It is not the lowest mean.
+//! The character column moves together with that. Four words is 27 characters, which
+//! costs nothing; thirty-two is 224, three wrapped lines, genuinely worse to read than
+//! a 43-character base64 string. Storing the bytes makes length free at rest, but an id
+//! in a log line is being looked at, which is the whole point of the exercise.
+//!
+//! So this is the right carrier at nonce and correlation-id sizes, and it weakens as
+//! payloads grow. What no alternative has at any size is the flat column: every value
+//! of a given width costs the same, so a budget is known before minting, where hex and
+//! base64 must both be provisioned for their worst case.
 //!
 //! ## The alphabet
 //!

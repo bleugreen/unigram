@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.2
+
+Documentation only.
+
+0.3.1 caveated the token comparison with "base64url beats it, 29.9 vs 32.0" — which is
+the single worst cell for `unigram`: the largest payload under the most base64-friendly
+vocabulary. Cherry-picking against yourself distorts as much as the reverse, so the
+comparison is now the full grid, and it says something more useful.
+
+At **4 bytes `unigram` beats hex, base64url, and base58 in all five families**, without
+qualification. At 8 bytes it wins everywhere except a tie with base58 under GPT-4o.
+base64url pulls ahead only at 16 bytes and above and only under the two newest GPT
+vocabularies; under Claude it loses by 5 to 9 tokens at those same sizes.
+
+Both weaknesses — the token margin and the character count — arrive together, with
+size. That makes the honest recommendation sharper than a blanket caveat: this is the
+right carrier at nonce and correlation-id widths, and it weakens as payloads grow.
+
 ## 0.3.1
 
 Documentation and tooling only; the wire format is unchanged from 0.3.0.

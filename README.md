@@ -26,21 +26,42 @@ One word is one byte and one token, so a value costs exactly as many tokens as i
 carries bytes — flat, for every value, with the spaces between words costing nothing.
 The four words above carry 32 bits in 4 tokens; the sixteen carry 128 in 16.
 
+### Size changes the answer
+
+Both of this encoding's weaknesses arrive together, and they arrive with size. Mean
+marginal tokens saved against each alternative, over 200 deterministic payloads per
+cell, ranged across all five tokenizers — **positive means `unigram` is cheaper**:
+
+| payload  | vs hex          | vs base64url    | `unigram` characters |
+|----------|----------------:|----------------:|---------------------:|
+| 4 bytes  | +1.1 … +3.9     | +0.6 … +2.3     |                   27 |
+| 8 bytes  | +1.9 … +7.1     | +0.1 … +2.8     |                   55 |
+| 16 bytes | +3.2 … +13.4    | −0.7 … +5.3     |                  111 |
+| 32 bytes | +5.6 … +26.2    | −2.5 … +9.2     |                  224 |
+
+At **4 bytes it beats hex, base64url, and base58 in every family measured**, with no
+qualification. At 8 bytes it wins everywhere bar a dead tie with base58 under GPT-4o.
+base64url only pulls ahead at 16 bytes and above, and only under the two newest GPT
+vocabularies, which have memorised base64 fragments — under Claude it loses to
+`unigram` by 5 to 9 tokens at exactly those sizes.
+
+The character column moves the same way. Four words is 27 characters, which is nothing;
+thirty-two words is 224, which is three wrapped lines and genuinely worse to read than
+a 43-character base64 string. Store the bytes and the length costs you nothing at rest,
+but an id that appears in a log line is being looked at, and that is the whole pitch.
+
+So: this is unambiguously the right carrier at **nonce and correlation-id sizes**, which
+is what it was built for, and it weakens steadily as payloads grow. For a 32-byte digest
+that a human never reads, base64url under a GPT model is a defensible choice.
+
 ### What it is not
 
-**It is not the cheapest encoding.** base64url beats it on mean tokens under GPT-4o
-(29.9 vs 32.0 for 32 bytes) and is a fifth of the characters. What `unigram` has that
-base64url does not is *flat* cost — every value of a width costs the same, so a budget
-is known before minting — and a decisive win under Claude, whose vocabulary has not
-memorised base64 fragments (32.0 vs 41.3). Numbers and full table
-[below](#against-the-alternatives).
+**Not error-detecting on its own.** All 256 symbols are occupied, so any word swapped
+for another word decodes cleanly to different bytes. `CheckedUnigramId` adds a CRC-8
+word for that; the plain type cannot and never will.
 
-**It is not error-detecting on its own.** All 256 symbols are occupied, so any word
-swapped for another word decodes cleanly to different bytes. `CheckedUnigramId` adds a
-CRC-8 word for that; the plain type cannot and never will.
-
-**It is not a secret.** Readable is the point; unguessable is a separate property that
-comes from width, and comparison here is not constant-time.
+**Not a secret.** Readable is the point; unguessable is a separate property that comes
+from width, and comparison here is not constant-time.
 
 ## Using it
 
@@ -147,23 +168,10 @@ Both are fixed. The sweep is why the claim needs no exception list.
 
 ### Against the alternatives
 
-Mean marginal tokens over 64 deterministic 32-byte payloads:
-
-| encoding    | GPT-4o | GPT-3.5/4 | GPT-2/3 | Claude | characters |
-|-------------|-------:|----------:|--------:|-------:|-----------:|
-| `unigram`   |   32.0 |      32.0 |    32.0 |   32.0 |        224 |
-| hex         |   37.4 |      37.2 |    38.9 |   42.6 |         64 |
-| base64url   |   29.9 |      31.2 |    33.6 |   41.3 |         43 |
-| base58      |   30.5 |      32.6 |    33.7 |   42.1 |         44 |
-
-Against hex this wins everywhere. Against base64url it loses by two tokens under
-GPT-4o, ties under GPT-3.5/4, and wins by nine under Claude, whose vocabulary has not
-memorised base64 fragments. And it is five times the characters, which matters in a
-terminal, a URL, or a database column, and not at all in a context window.
-
-What no other row has is the flat column. Every value of a given width costs exactly
-the same, so a budget is known before the value is minted. That, and being readable,
-is what is bought here — not the lowest mean.
+The full grid is [above](#size-changes-the-answer). What no
+alternative has is the flat column: every `unigram` value of a given width costs
+exactly the same number of tokens, so a budget is known before the value is minted,
+where hex and base64 both have to be provisioned for their worst case.
 
 ### Why not an existing wordlist?
 
