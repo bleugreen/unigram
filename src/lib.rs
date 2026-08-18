@@ -18,11 +18,12 @@
 //!   token, so an encoded value costs exactly one token per byte — and, unlike hex,
 //!   the same for every value. Measured against hex of the same payload:
 //!
-//! | payload  | hex (mean / worst) | `unigram` |
-//! |----------|--------------------|-----------|
-//! | 4 bytes  | 6.0 / 8            | 4         |
-//! | 16 bytes | 21.5 / 25          | 16        |
-//! | 32 bytes | 42.2 / 49          | 32        |
+//! | payload  | bits | hex (mean / worst) | `unigram` |
+//! |----------|------|--------------------|-----------|
+//! | 4 bytes  | 32   | 6.0 / 8            | 4         |
+//! | 8 bytes  | 64   | 11.1 / 14          | 8         |
+//! | 16 bytes | 128  | 21.5 / 25          | 16        |
+//! | 32 bytes | 256  | 42.2 / 49          | 32        |
 //!
 //!   Roughly a quarter cheaper on average, but the flat cost matters more than the
 //!   mean: hex cost swings with the value, so a budget built on it has to assume
@@ -31,14 +32,23 @@
 //!   Llama's SentencePiece, where it averages 58.2 against the same flat 32.
 //!   `verify-alphabet.py` prints the table for every family it checks.
 //!
-//! Corruption also becomes visible rather than silent: the alphabet is 256 words out
-//! of every string that could be written, so a mangled word is overwhelmingly likely
-//! to be no word at all, and [`decode`] says so and names it.
+//! Corruption also stops being silent. The alphabet is 256 words out of every string
+//! that could be written, so a mangled word is overwhelmingly likely to be no word at
+//! all — and [`decode`] refuses it and names it, rather than guessing at the byte it
+//! stood for:
 //!
 //! ```
 //! let words = unigram::encode(&[0x3d, 0x9a, 0x00, 0xff]);
+//! assert_eq!(words, "department number access world");
 //! assert_eq!(unigram::decode(&words).unwrap(), vec![0x3d, 0x9a, 0x00, 0xff]);
+//!
+//! // One character of one word, slipped:
+//! let slipped = unigram::decode("department numbor access world");
+//! assert!(slipped.is_err());
 //! ```
+//!
+//! The equivalent hex — `3d9a00ff` becoming `3d9b00ff` — is another valid digest, and
+//! nothing downstream can tell.
 //!
 //! ## Why the join is a space
 //!
@@ -82,9 +92,8 @@
 //! unpredictable, but four words is 4.3 billion candidates, which is an afternoon
 //! for anything that can ask freely. Four words suits a value that is scoped,
 //! short-lived, and rate-limited — an acknowledgement nonce, a correlation id. A
-//! value a stranger can grind at wants eight or more, and at equal entropy the
-//! words are still cheaper than the hex: 64 bits costs 8 tokens here against a mean
-//! of 11.2 and a worst case of 14.
+//! value a stranger can grind at wants eight or more, and at equal entropy the words
+//! are still the cheaper carrier — see the table above.
 //!
 //! ## The alphabet
 //!

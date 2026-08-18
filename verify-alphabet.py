@@ -35,7 +35,7 @@ from typing import Callable, Iterator
 LIB = pathlib.Path(__file__).parent / "src" / "lib.rs"
 EXPECTED = 256
 CARRIER = "the"
-SAMPLE_PAYLOAD_SIZES = (4, 16, 32)
+SAMPLE_PAYLOAD_SIZES = (4, 8, 16, 32)
 SAMPLES = 64
 
 

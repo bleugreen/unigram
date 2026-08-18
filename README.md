@@ -2,76 +2,83 @@
 
 A bijective codec between bytes and words that cost exactly one LLM token.
 
+The same four bytes, twice:
+
+```text
+hex      a14ed61a                                            6 tokens
+unigram  people error social career                          4 tokens
+```
+
+The same sixteen:
+
+```text
+hex      8623a771b764ce50bb85371ff65aebe9                   21 tokens
+unigram  login city population income question head season
+         example region location count century update
+         football task table                                16 tokens
+```
+
+Now corrupt one character of each.
+
+```text
+hex      a14ed61a  ->  a14ed61b     still a valid digest, and nothing can tell
+
+unigram  people error social career  ->  people errer social career
+         Err(UnknownWord { position: 1, word: "errer" })
+```
+
+That is the whole pitch. Machine identifiers are routinely handed to a language model
+and asked back — an acknowledgement token, a digest, a correlation id — and hex is
+the worst available carrier for that trip. It is expensive, because a hex run shreds
+into a fragment every character or two under every tokenizer. And it is *silently*
+fragile, because every character is drawn from the same sixteen, so every corruption
+of a hex digest is another hex digest.
+
+## Using it
+
 ```rust
 let words = unigram::encode(&[0x3d, 0x9a, 0x00, 0xff]);
-// "check music access world"
-
+assert_eq!(words, "department number access world");
 assert_eq!(unigram::decode(&words)?, vec![0x3d, 0x9a, 0x00, 0xff]);
+
+unigram::mint(4);                     // 32 fresh bits from the OS CSPRNG, 4 tokens
+unigram::matches(issued, presented);  // comparison that forgives a round trip
 ```
 
-## Why
-
-Machine identifiers are routinely handed to a language model and asked back: an
-acknowledgement token, a digest, a correlation id. Hexadecimal is the worst possible
-carrier for that trip. It is expensive, because a hex run shreds into a fragment
-every character or two under every tokenizer; and it is *undetectably* fragile,
-because every character is drawn from the same sixteen, so a corrupted one still
-looks like a valid digest.
-
-`unigram` carries the same bytes as words drawn from a fixed alphabet of 256. Two
-properties follow from that size, and they are the whole design.
-
-**One word is exactly one byte.** Encoding is a table lookup per byte — no
-bit-packing, no padding, no length convention. Every byte string has exactly one
-encoding, and every sequence of alphabet words decodes.
-
-**Every word is exactly one token.** An encoded value costs one token per byte, and
-the same for every value. Against hex of the same payload, under Claude:
-
-| payload  | hex (mean / worst) | `unigram` |
-|----------|--------------------|-----------|
-| 4 bytes  | 6.0 / 8            | 4         |
-| 16 bytes | 21.5 / 25          | 16        |
-| 32 bytes | 42.2 / 49          | 32        |
-
-Roughly a quarter cheaper on average — but the flat cost matters more than the mean.
-Hex swings with the value, so a token budget built on it has to assume the worst
-case. This one is known before the value is minted.
-
-**Corruption becomes visible.** The alphabet is 256 words out of every string that
-could be written, and no two entries are within one character edit of each other, so
-a mangled word is overwhelmingly likely to be no word at all. `decode` says so, and
-names the word:
-
-```rust
-unigram::decode("check musix access")?;
-// Err(UnknownWord { position: 1, word: "musix" })
-```
-
-Hex cannot do this. Every single-character corruption of a hex digest is another
-valid hex digest.
-
-## Surviving the round trip
-
-`decode` is liberal in what it accepts. Any run of characters that is not an ASCII
+`decode` is liberal in what it accepts: any run of characters that is not an ASCII
 letter separates words, and case is ignored — so a value that came back hyphenated,
 re-wrapped across lines, comma-joined, quoted, or shouted still decodes to the bytes
-that were sent.
-
-```rust
-unigram::mint(4);                        // 32 fresh bits, 4 tokens
-unigram::matches(issued, presented);     // comparison that forgives the damage
-```
+that were sent. It is exact in what it returns, though: an unknown word is refused
+and named, never skipped or guessed at.
 
 `matches` compares decoded bytes when both sides are encoded values, and normalized
 strings otherwise — so values issued in some older format keep matching themselves
 without a migration.
 
+## What it costs
+
+One word is one byte, and one word is one token, so an encoded value costs one token
+per byte — the same for every value. Against hex of the same payload, under Claude:
+
+| payload  | bits | hex (mean / worst) | `unigram` |
+|----------|------|--------------------|-----------|
+| 4 bytes  | 32   | 6.0 / 8            | 4         |
+| 8 bytes  | 64   | 11.1 / 14          | 8         |
+| 16 bytes | 128  | 21.5 / 25          | 16        |
+| 32 bytes | 256  | 42.2 / 49          | 32        |
+
+Roughly a quarter cheaper on average — but the flat cost matters more than the mean.
+Hex swings with the value, so a token budget built on it has to assume the worst
+case. This one is known before the value is minted.
+
+The margin narrows under the GPT-4 vocabularies, where 32 bytes of hex average 37.1,
+and widens sharply under Llama's SentencePiece, where the same payload averages 58.2
+against the same flat 32.
+
 ## Choosing a length
 
-One word is one byte and one token, so a value's length is its entropy budget and
-its token budget at once — the two cannot drift apart, which is most of why this is
-easier to reason about than hex.
+Length is the entropy budget and the token budget at once — the two cannot drift
+apart, which is most of why this is easier to size than hex.
 
 | words | bits | distinct values | values before a 1-in-a-million collision |
 |-------|------|-----------------|------------------------------------------|
@@ -93,8 +100,7 @@ separate: `mint` draws from the OS CSPRNG, so every bit is unpredictable, but fo
 words is 4.3 billion candidates, which is an afternoon for anything that can ask
 freely. Four words suits a value that is scoped, short-lived, and rate-limited — an
 acknowledgement nonce, a correlation id. A value a stranger can grind at wants eight
-or more, and at equal entropy the words are still cheaper than the hex: 64 bits costs
-8 tokens here against a mean of 11.2 and a worst case of 14.
+or more, and at equal entropy the words are still the cheaper carrier.
 
 ## The join is a space, deliberately
 
@@ -110,7 +116,9 @@ other separator is free. Measured across all five families, an eight-byte value:
 | `,` `\n`  |  13–15 |     12–15 |    15 |    15 |    15 |     15 |
 
 The join would cost almost as much as the payload. Encoded values travel inside
-quoted strings in practice, where embedded spaces are free.
+quoted strings in practice, where embedded spaces are free — and `decode` accepts
+every one of those separators anyway, so a value that comes back joined differently
+is not a value that is lost.
 
 ## The alphabet
 
@@ -120,17 +128,16 @@ constraints:
 - **One token** under Claude, GPT-2/3 (`r50k`, `p50k`), GPT-3.5/4 (`cl100k`), GPT-4o
   (`o200k`), and Llama's SentencePiece — spanning both the BPE and SentencePiece
   families.
-- **No two entries within one character edit of each other**, which is what makes a
-  single-character slip land outside the alphabet instead of on a different valid
-  word.
+- **No two entries within one character edit of each other.** This is what puts a
+  slipped character outside the alphabet instead of on a different valid word, and it
+  is the property hex cannot have at any length.
 - **Nothing charged** — no death, violence, race, gender, religion, or politics.
   These strings surface unbidden in transcripts, logs, and user-facing errors.
 - **No entry is an inflection of another**, so a dropped plural cannot silently
   decode to a different byte.
 
 The table is indexed by the byte each word encodes, so it is appended to, never
-rearranged: reordering an entry changes what every previously issued value decodes
-to.
+rearranged: reordering an entry changes what every previously issued value decodes to.
 
 ## Verifying it
 
@@ -138,8 +145,8 @@ The crate depends on nothing but the OS CSPRNG, at runtime or under test, and ne
 tokenizes. `cargo test` covers the codec and the table's structure; it says nothing
 about cost.
 
-Every cost claim above is checked by `verify-alphabet.py`, which reads the alphabet
-straight out of `src/lib.rs` and re-measures it against all five families:
+Every number on this page is printed by `verify-alphabet.py`, which reads the
+alphabet straight out of `src/lib.rs` and re-measures it against all five families:
 
 ```bash
 uv run verify-alphabet.py
