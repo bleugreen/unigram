@@ -67,6 +67,35 @@ unigram::matches(issued, presented);     // comparison that forgives the damage
 strings otherwise — so values issued in some older format keep matching themselves
 without a migration.
 
+## Choosing a length
+
+One word is one byte and one token, so a value's length is its entropy budget and
+its token budget at once — the two cannot drift apart, which is most of why this is
+easier to reason about than hex.
+
+| words | bits | distinct values | values before a 1-in-a-million collision |
+|-------|------|-----------------|------------------------------------------|
+| 2     | 16   | 65,536          | fewer than 1                             |
+| 3     | 24   | 16.8 million    | 5                                        |
+| 4     | 32   | 4.3 billion     | 92                                       |
+| 6     | 48   | 281 trillion    | 23,700                                   |
+| 8     | 64   | 1.8 × 10¹⁹      | 6 million                                |
+| 16    | 128  | 3.4 × 10³⁸      | 2.6 × 10¹⁶                               |
+| 32    | 256  | 1.2 × 10⁷⁷      | 4.8 × 10³⁵                               |
+
+The right column is the birthday bound, `k ≈ √(2·N·p)`, and it is the column to size
+against: collisions arrive at the square root of the space, not at the space. Sixteen
+words is a UUID's width, thirty-two a SHA-256's.
+
+Two questions hide in that table and it answers only one. **Collision** is the right
+column — how many values may be outstanding before two coincide. **Guessing** is
+separate: `mint` draws from the OS CSPRNG, so every bit is unpredictable, but four
+words is 4.3 billion candidates, which is an afternoon for anything that can ask
+freely. Four words suits a value that is scoped, short-lived, and rate-limited — an
+acknowledgement nonce, a correlation id. A value a stranger can grind at wants eight
+or more, and at equal entropy the words are still cheaper than the hex: 64 bits costs
+8 tokens here against a mean of 11.2 and a worst case of 14.
+
 ## The join is a space, deliberately
 
 Tokenizer vocabularies hold their canonical word entries space-prefixed, so the space

@@ -56,6 +56,36 @@
 //! back hyphenated, re-wrapped across lines, comma-joined, or shouted still decodes
 //! to the bytes that were sent.
 //!
+//! ## Choosing a length
+//!
+//! One word is one byte and one token, so a value's length is its entropy budget
+//! and its token budget at once — the two cannot drift apart, which is most of why
+//! this is easier to reason about than hex.
+//!
+//! | words | bits | distinct values | values before a 1-in-a-million collision |
+//! |-------|------|-----------------|------------------------------------------|
+//! | 2     | 16   | 65,536          | fewer than 1                             |
+//! | 3     | 24   | 16.8 million    | 5                                        |
+//! | 4     | 32   | 4.3 billion     | 92                                       |
+//! | 6     | 48   | 281 trillion    | 23,700                                   |
+//! | 8     | 64   | 1.8 × 10^19     | 6 million                                |
+//! | 16    | 128  | 3.4 × 10^38     | 2.6 × 10^16                              |
+//! | 32    | 256  | 1.2 × 10^77     | 4.8 × 10^35                              |
+//!
+//! The right column is the birthday bound, `k ≈ sqrt(2·N·p)`, and it is the column
+//! to size against: collisions arrive at the square root of the space, not at the
+//! space. Sixteen words is a UUID's width, thirty-two a SHA-256's.
+//!
+//! Two questions hide in that table and it answers only one. **Collision** is the
+//! right column — how many values may be outstanding before two coincide.
+//! **Guessing** is separate: [`mint`] draws from the OS CSPRNG, so every bit is
+//! unpredictable, but four words is 4.3 billion candidates, which is an afternoon
+//! for anything that can ask freely. Four words suits a value that is scoped,
+//! short-lived, and rate-limited — an acknowledgement nonce, a correlation id. A
+//! value a stranger can grind at wants eight or more, and at equal entropy the
+//! words are still cheaper than the hex: 64 bits costs 8 tokens here against a mean
+//! of 11.2 and a worst case of 14.
+//!
 //! ## The alphabet
 //!
 //! Entries are lowercase ASCII English, 4 to 11 characters, chosen under four
@@ -225,8 +255,11 @@ pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
 
 /// Mint `bytes` bytes of fresh entropy, encoded.
 ///
-/// Four bytes is a good default for a nonce: 32 bits in four tokens, against the
-/// nineteen a 32-character hex string costs.
+/// Four bytes is a reasonable default for a short-lived, rate-limited nonce: 32
+/// bits in four flat tokens, where the same 32 bits as hex average 6 and can reach
+/// 8. It is a poor default for anything else — see "Choosing a length" above, which
+/// is the difference between a value that cannot collide and one that cannot be
+/// guessed.
 ///
 /// # Panics
 ///
