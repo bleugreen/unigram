@@ -3,41 +3,68 @@
 //! Machine identifiers spend their lives being looked at: handed to a language model
 //! and asked back, printed in a log, quoted in an error, read off a page by whoever
 //! is debugging at the time. This crate carries them as words, so that an id becomes
-//! something a reader can hold — `department number access world` can be said out
+//! something a reader can hold — `description note access world` can be said out
 //! loud, told apart from its neighbour at a glance, and recognised again an hour
 //! later, which is what a name is for.
 //!
 //! ```
-//! let words = unigram::encode(&[0x3d, 0x9a, 0x00, 0xff]);
-//! assert_eq!(words, "department number access world");
-//! assert_eq!(unigram::decode(&words).unwrap(), vec![0x3d, 0x9a, 0x00, 0xff]);
+//! use unigram::UnigramId;
+//!
+//! let id = UnigramId::from_bytes([0x3d, 0x9a, 0x00, 0xff]);
+//! assert_eq!(id.to_string(), "description note access world");
+//! assert_eq!(UnigramId::<4>::parse("description note access world").unwrap(), id);
 //! ```
 //!
-//! It is also the densest form the trip allows. The words come from a fixed alphabet
-//! of 256, and two properties follow from that size — they are the whole design:
+//! The words come from a fixed alphabet of 256, and two properties follow from that
+//! size — they are the whole design:
 //!
 //! - **One word is exactly one byte.** Encoding is a table lookup per byte with no
 //!   bit-packing, no padding, and no length convention; decoding is its inverse.
-//!   Every byte string has exactly one encoding, and every sequence of alphabet
-//!   words decodes.
-//! - **Every word is exactly one token.** Each entry was measured to cost a single
-//!   token, so an encoded value costs exactly one token per byte — and, unlike hex,
-//!   the same for every value. Measured against hex of the same payload:
+//!   Every nonempty byte string has exactly one encoding, and every sequence of
+//!   alphabet words decodes.
+//! - **Every word is one token, wherever a space precedes it.** An encoded value
+//!   therefore costs one token per byte. Against hex of the same payload, under
+//!   Claude:
 //!
-//! | payload  | bits | hex (mean / worst) | `unigram` |
-//! |----------|------|--------------------|-----------|
-//! | 4 bytes  | 32   | 6.0 / 8            | 4         |
-//! | 8 bytes  | 64   | 11.1 / 14          | 8         |
-//! | 16 bytes | 128  | 21.5 / 25          | 16        |
-//! | 32 bytes | 256  | 42.2 / 49          | 32        |
+//! | payload  | bits | hex (mean / sample max) | `unigram` |
+//! |----------|------|-------------------------|-----------|
+//! | 4 bytes  | 32   | 6.0 / 8                 | 4         |
+//! | 8 bytes  | 64   | 11.1 / 14               | 8         |
+//! | 16 bytes | 128  | 21.5 / 25               | 16        |
+//! | 32 bytes | 256  | 42.2 / 49               | 32        |
 //!
 //!   Roughly a quarter cheaper on average, but the flat cost matters more than the
-//!   mean: hex cost swings with the value, so a budget built on it has to assume
-//!   the worst case. Those are Claude's numbers; the margin narrows under the GPT-4
-//!   vocabularies, where 32 bytes of hex average 37.1, and widens sharply under
-//!   Llama's SentencePiece, where it averages 58.2 against the same flat 32.
-//!   `verify-alphabet.py` prints the table for every family it checks.
+//!   mean: hex cost swings with the value, so a budget built on it has to assume the
+//!   worst case. Those are Claude's numbers over 64 deterministic payloads per size,
+//!   so the right-hand column is a sample maximum rather than a proven bound. The
+//!   margin narrows under the GPT-4 vocabularies, where 32 bytes of hex average 37.1,
+//!   and widens sharply under Llama's SentencePiece, at 58.2 against the same flat
+//!   32. `verify-alphabet.py` prints the table for every family it checks.
 //!
+//! ## What the token claim does and does not cover
+//!
+//! The per-byte cost is exact for every word that a space precedes, which is every
+//! word in an encoded value except the first. The **first** word costs one extra
+//! token when the character before it is not a space — after a backtick or an open
+//! parenthesis under the GPT vocabularies, or after a quote under Claude. Measured
+//! for a 4-byte value, against an ideal of 4:
+//!
+//! | context             | GPT-4o | GPT-3.5/4 | GPT-2/3 | Llama | Claude |
+//! |---------------------|-------:|----------:|--------:|------:|-------:|
+//! | start of string     |      4 |         4 |       4 |     4 |      4 |
+//! | in prose, `X.`      |      4 |         4 |       4 |     4 |      4 |
+//! | after `id: `        |      3 |         3 |       3 |     3 |      4 |
+//! | after a newline     |      4 |         4 |       4 |     4 |      5 |
+//! | JSON `"id":"X"`     |      3 |         4 |       4 |     4 |      5 |
+//! | markdown `` `X` ``  |      5 |         5 |       5 |     5 |      4 |
+//! | after `(`           |      5 |         5 |       5 |     5 |      4 |
+//!
+//! So the guarantee is *one token per byte, plus at most one for the opening word*
+//! — a constant, not anything that grows with the payload, and longer values
+//! amortise it away. It can also go the other way: where the context already ends in
+//! a space, the value absorbs it and comes in a token under. `verify-alphabet.py`
+//! measures every one of these contexts in every family, and fails if any of them
+//! ever costs more than one over.
 //!
 //! ## Why the join is a space
 //!
@@ -50,16 +77,32 @@
 //! absorbs anything. Encoded values travel inside quoted strings in practice, where
 //! embedded spaces are free.
 //!
-//! [`decode`] is nonetheless liberal in what it accepts: any run of characters that
-//! is not an ASCII letter separates words, and case is ignored. A value that came
-//! back hyphenated, re-wrapped across lines, comma-joined, or shouted still decodes
-//! to the bytes that were sent.
+//! ## Reading a value back
+//!
+//! Two parsers, because they answer different questions.
+//!
+//! [`UnigramId::parse`] and [`decode`] are **canonical**: lowercase alphabet words
+//! joined by exactly one space, nothing else. That is what belongs at a boundary
+//! where the value is about to be trusted — a database key, an API parameter, an
+//! authorization check — because a canonical parser has exactly one accepted spelling
+//! per value, and cannot be talked into treating some other string as one.
+//!
+//! [`UnigramId::recover`] and [`decode_recovered`] are **tolerant**: any run of
+//! characters that is not an ASCII letter separates words, and case is ignored. A
+//! value that came back hyphenated, re-wrapped across lines, comma-joined, quoted, or
+//! shouted still yields the bytes that were sent. That is what belongs where a value
+//! is being retrieved from prose a model produced, and nowhere else — note that under
+//! it, `home page` is a perfectly valid encoded value, because both are alphabet
+//! words.
+//!
+//! Both are exact in what they return: an unknown word is refused and named, never
+//! skipped or guessed at.
 //!
 //! ## Choosing a length
 //!
-//! One word is one byte and one token, so a value's length is its entropy budget
-//! and its token budget at once — the two cannot drift apart, which is most of why
-//! this is easier to reason about than hex.
+//! One word is one byte and one token, so a value's length is its entropy budget and
+//! its token budget at once — the two cannot drift apart, which is most of why this
+//! is easier to reason about than hex.
 //!
 //! | words | bits | distinct values | values before a 1-in-a-million collision |
 //! |-------|------|-----------------|------------------------------------------|
@@ -71,38 +114,21 @@
 //! | 16    | 128  | 3.4 × 10^38     | 2.6 × 10^16                              |
 //! | 32    | 256  | 1.2 × 10^77     | 4.8 × 10^35                              |
 //!
-//! The right column is the birthday bound, `k ≈ sqrt(2·N·p)`, and it is the column
-//! to size against: collisions arrive at the square root of the space, not at the
-//! space. Sixteen words is a UUID's width, thirty-two a SHA-256's.
+//! The right column is the birthday bound, `k ≈ sqrt(2·N·p)`, and it is the column to
+//! size against: collisions arrive at the square root of the space, not at the space.
+//! Sixteen words is a UUID's width, thirty-two a SHA-256's.
 //!
 //! Two questions hide in that table and it answers only one. **Collision** is the
 //! right column — how many values may be outstanding before two coincide.
-//! **Guessing** is separate: [`mint`] draws from the OS CSPRNG, so every bit is
-//! unpredictable, but four words is 4.3 billion candidates, which is an afternoon
-//! for anything that can ask freely. Four words suits a value that is scoped,
-//! short-lived, and rate-limited — an acknowledgement nonce, a correlation id. A
-//! value a stranger can grind at wants eight or more, and at equal entropy the words
-//! are still the cheaper carrier — see the table above.
+//! **Guessing** is separate: [`UnigramId::try_random`] draws from the OS CSPRNG, so
+//! every bit is unpredictable, but four words is 4.3 billion candidates, which is an
+//! afternoon for anything that can ask freely. Four words suits a value that is
+//! scoped, short-lived, and rate-limited — an acknowledgement nonce, a correlation
+//! id. A value a stranger can grind at wants eight or more.
 //!
-//! ## The alphabet
-//!
-//! Entries are lowercase ASCII English, 4 to 11 characters, chosen under four
-//! constraints:
-//!
-//! - **One token, under five tokenizer families.** Every entry costs a single token
-//!   under Claude, GPT-2/3 (`r50k`, `p50k`), GPT-3.5/4 (`cl100k`), GPT-4o
-//!   (`o200k`), and Llama's SentencePiece — spanning both the BPE and SentencePiece
-//!   families. None of those vocabularies is vendored here, so this is checked by a
-//!   script rather than by `cargo test`; see "Changing the alphabet" below.
-//! - **No two entries within one character edit of each other.** A slipped character
-//!   therefore lands outside the alphabet rather than on a different valid word, so
-//!   [`decode`] refuses it instead of returning different bytes. This matters less
-//!   than it sounds — neither a model nor a copy-paste mangles an id in practice —
-//!   but it is free, given that the entries have to be distinguishable to read.
-//! - **Nothing charged** — no death, violence, race, gender, religion, or politics.
-//!   These strings surface unbidden in transcripts, logs, and user-facing errors.
-//! - **No entry is an inflection of another**, so a dropped plural cannot silently
-//!   decode to a different byte.
+//! Comparison here is byte equality, which is not constant-time. A value used as a
+//! bearer credential wants a constant-time comparison over [`UnigramId::as_bytes`],
+//! which this crate deliberately does not pretend to provide.
 //!
 //! ## Why the alphabet is 256 and not larger
 //!
@@ -110,33 +136,48 @@
 //! one stops where it does. Of the roughly 65,000 space-prefixed lowercase words in
 //! the largest vocabulary, 6,654 are single-token in all five families; 5,452 of
 //! those are 4 to 11 ASCII characters; and 640 of *those* survive Claude, whose
-//! tokenizer is by far the narrowest of the five. Spacing them a character edit
-//! apart leaves about 509.
+//! tokenizer is by far the narrowest of the five. Spacing them a character edit apart
+//! leaves about 509.
 //!
-//! So the ceiling is 512 entries — 9 bits per token against the 8 here, and 9 does
-//! not divide 8. Bit-packing 9-bit symbols would save nothing at all on a 4-byte
-//! value (32 bits still needs 4 words), one token on a 16-byte value, and three on a
-//! 32-byte one, in exchange for the byte-indexed table, the claim that one word is
-//! one byte, and a codec that can be described in a sentence. It is not a trade
-//! worth making.
+//! So the ceiling is 512 entries — `log2(509) ≈ 8.99` bits per token against the 8
+//! here, and 9 does not divide 8. Bit-packing 9-bit symbols would save nothing at all
+//! on a 4-byte value (32 bits still needs 4 words), one token on a 16-byte value, and
+//! three on a 32-byte one, in exchange for the byte-indexed table, the claim that one
+//! word is one byte, and a codec that can be described in a sentence. It is not a
+//! trade worth making, and this is therefore not the densest possible encoding — it
+//! is the densest byte-aligned one.
 //!
 //! Other scripts do not change this. CJK is denser on the page but agrees across
 //! families far less: 39 characters are single-token in all five, which does not
 //! reach even 256. Accented Latin is worse — 5 words survive. The binding constraint
 //! was never English; it is the intersection itself.
 //!
+//! ## The alphabet is the wire format
+//!
+//! [`ALPHABET`] is frozen. Byte `n` is `ALPHABET[n]`, all 256 slots are occupied, and
+//! changing any entry changes what every previously issued value decodes to. There is
+//! no append: the array is full. A test pins the table's digest so that an edit has
+//! to be deliberate, and if a different table is ever wanted it belongs beside this
+//! one under a new name and a new [`FORMAT_VERSION`], with this decoder kept forever.
+//!
+//! Nothing in an encoded value says which table produced it, so a system that stores
+//! these must record the format version alongside them, or accept that it can never
+//! change tables.
+//!
 //! ## Changing the alphabet
 //!
 //! Nothing here tokenizes, at runtime or under test: the OS CSPRNG is this crate's
-//! only dependency at any stage. So `cargo test` covers the codec's behaviour and
-//! the table's structural properties — 256 entries, sorted, unique, 4 to 11
-//! lowercase ASCII characters, and no two within one edit — and says nothing about
-//! cost.
+//! only dependency at any stage. So `cargo test` covers the codec's behaviour and the
+//! table's structural properties — 256 entries, sorted, unique, 4 to 11 lowercase
+//! ASCII characters, no two within one character edit, no entry reachable from
+//! another by adding or removing a suffix, and the frozen digest — and says nothing
+//! about cost.
 //!
 //! Every cost claim above is checked instead by `verify-alphabet.py`, beside this
-//! file. It reads [`ALPHABET`] straight out of this source — a copy would drift —
-//! and re-measures each entry against all five tokenizer families, along with the
-//! composed per-byte cost, the margin over hex, and the choice of separator:
+//! file. It reads [`ALPHABET`] straight out of this source — a copy would drift — and
+//! re-measures each entry against all five tokenizer families, along with the
+//! composed per-byte cost in each surrounding context, the margin over hex, and the
+//! choice of separator:
 //!
 //! ```text
 //! uv run verify-alphabet.py
@@ -150,51 +191,164 @@
 
 use std::fmt;
 
+/// The version of the encoding this crate implements.
+///
+/// Bumped only when [`ALPHABET`] changes, which changes what every previously issued
+/// value decodes to. Nothing in an encoded value carries this, so a system storing
+/// values must record it alongside them.
+pub const FORMAT_VERSION: u32 = 2;
+
 /// The 256-word alphabet, sorted, indexed by the byte each word encodes.
 ///
-/// Sorted so [`decode`] can binary-search it, and byte `n` is `ALPHABET[n]` — the
-/// table *is* the codec. Reordering an entry changes what every previously issued
-/// value decodes to, so this list is appended to, never rearranged.
+/// Sorted so the parsers can binary-search it, and byte `n` is `ALPHABET[n]` — the
+/// table *is* the codec.
 ///
-/// Laid out packed rather than one entry per line: rustfmt would give this table
-/// 256 vertical lines, which is harder to scan and to review than a grid, and the
-/// entries are data rather than code.
+/// **Frozen.** All 256 slots are occupied, so there is nothing to append to, and
+/// changing an entry changes what every previously issued value decodes to. A test
+/// pins the digest of this table; if it fails, the change was not intended, and if it
+/// was, it needs a new table under a new name rather than an edit to this one.
+///
+/// Laid out packed rather than one entry per line: rustfmt would give this table 256
+/// vertical lines, which is harder to scan and to review than a grid, and the entries
+/// are data rather than code.
 ///
 /// Editing this table? A green `cargo test` proves only its structure. Run
-/// `verify-alphabet.py` — that is where single-token cost is checked, under all
-/// five tokenizer families.
+/// `verify-alphabet.py` — that is where single-token cost is checked, under all five
+/// tokenizer families.
 #[rustfmt::skip]
 pub const ALPHABET: [&str; 256] = [
-    "access", "account", "action", "address", "album", "android", "application", "area",
-    "array", "article", "association", "author", "award", "background", "band", "black",
-    "board", "body", "border", "break", "build", "building", "business", "button", "call",
-    "card", "career", "category", "census", "center", "central", "century", "change", "character",
-    "check", "city", "class", "click", "client", "close", "club", "code", "college", "color",
-    "column", "command", "common", "community", "company", "components", "console", "container",
-    "content", "control", "council", "count", "country", "course", "data", "database", "density",
-    "department", "description", "design", "development", "device", "director", "display",
-    "district", "division", "document", "door", "double", "download", "early", "education",
-    "element", "email", "error", "events", "example", "export", "express", "face", "features",
-    "field", "film", "first", "float", "food", "football", "force", "form", "format", "function",
-    "future", "games", "general", "green", "group", "head", "header", "height", "help", "high",
-    "history", "home", "host", "house", "households", "images", "import", "important", "income",
-    "index", "info", "information", "input", "install", "island", "king", "label", "language",
-    "large", "league", "length", "level", "library", "license", "life", "light", "list",
-    "local", "location", "login", "love", "management", "march", "market", "master", "material",
-    "math", "median", "members", "message", "method", "million", "models", "money", "music",
-    "network", "news", "north", "note", "number", "object", "office", "options", "package",
-    "page", "password", "people", "period", "person", "places", "play", "players", "population",
-    "port", "position", "power", "press", "price", "print", "println", "process", "production",
-    "products", "program", "project", "property", "published", "query", "question", "range",
-    "records", "references", "region", "register", "render", "report", "request", "research",
-    "response", "results", "return", "review", "river", "role", "room", "router", "school",
-    "science", "score", "script", "search", "season", "section", "select", "send", "series",
-    "services", "session", "share", "social", "society", "software", "song", "source", "south",
-    "space", "span", "species", "square", "station", "story", "street", "string", "students",
-    "study", "style", "success", "system", "table", "target", "task", "team", "television",
-    "template", "title", "token", "track", "train", "training", "union", "university", "update",
-    "username", "users", "version", "video", "village", "website", "width", "window", "world",
+    "access", "account", "action", "address", "album", "android", "application", "area", "array",
+    "article", "association", "author", "award", "background", "band", "black", "board", "body",
+    "border", "break", "build", "business", "button", "call", "card", "career", "category",
+    "census", "center", "central", "century", "change", "character", "check", "city", "class",
+    "click", "client", "close", "club", "code", "college", "color", "column", "command", "common",
+    "community", "company", "components", "console", "container", "content", "control", "council",
+    "count", "country", "course", "data", "database", "density", "department", "description",
+    "design", "development", "device", "director", "display", "district", "division", "document",
+    "door", "double", "download", "early", "education", "element", "email", "error", "events",
+    "example", "export", "express", "face", "features", "field", "film", "first", "float", "font",
+    "food", "football", "force", "form", "format", "function", "future", "games", "general",
+    "green", "group", "head", "height", "help", "high", "history", "home", "host", "house",
+    "households", "images", "import", "important", "income", "index", "info", "information",
+    "input", "install", "island", "king", "label", "language", "large", "league", "length", "level",
+    "library", "license", "life", "light", "list", "local", "location", "login", "love",
+    "management", "march", "market", "master", "material", "math", "median", "members", "message",
+    "method", "million", "models", "module", "money", "month", "music", "network", "news", "north",
+    "note", "number", "object", "office", "options", "package", "page", "park", "password",
+    "people", "period", "person", "places", "play", "population", "port", "position", "power",
+    "press", "price", "print", "println", "process", "production", "products", "program", "project",
+    "property", "published", "query", "question", "range", "records", "references", "region",
+    "register", "render", "report", "request", "research", "response", "results", "return",
+    "review", "river", "role", "room", "router", "school", "science", "score", "script", "search",
+    "season", "section", "select", "send", "series", "services", "session", "share", "social",
+    "society", "software", "song", "source", "south", "space", "span", "species", "square",
+    "station", "story", "street", "string", "students", "study", "style", "success", "system",
+    "table", "target", "task", "team", "television", "template", "title", "token", "track", "train",
+    "union", "university", "update", "username", "users", "version", "video", "village", "website",
+    "width", "window", "world",
 ];
+
+/// An identifier of `N` bytes, rendered as `N` alphabet words.
+///
+/// The bytes are the value; the words are how it is displayed and parsed. Holding it
+/// this way means the length is part of the type, equality is byte equality rather
+/// than string comparison, and there is no question of what format a given value is
+/// in — which is the question a string-shaped API cannot answer and must guess at.
+///
+/// ```
+/// use unigram::UnigramId;
+///
+/// let id: UnigramId<4> = UnigramId::try_random().unwrap();
+/// let round_tripped = UnigramId::<4>::parse(&id.to_string()).unwrap();
+/// assert_eq!(id, round_tripped);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UnigramId<const N: usize>([u8; N]);
+
+impl<const N: usize> UnigramId<N> {
+    /// Wrap bytes that are already in hand.
+    pub const fn from_bytes(bytes: [u8; N]) -> Self {
+        Self(bytes)
+    }
+
+    /// Mint `N` bytes of fresh entropy from the OS CSPRNG.
+    ///
+    /// See "Choosing a length" in the crate documentation for how wide to make it —
+    /// four bytes is right only for a value that is scoped, short-lived, and
+    /// rate-limited.
+    pub fn try_random() -> Result<Self, getrandom::Error> {
+        let mut bytes = [0u8; N];
+        getrandom::fill(&mut bytes)?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse the **canonical** form: lowercase alphabet words, single spaces, nothing
+    /// else.
+    ///
+    /// This is the parser for a boundary where the value is about to be trusted. For
+    /// a value being retrieved out of text a model wrote, see [`UnigramId::recover`].
+    pub fn parse(text: &str) -> Result<Self, ParseError> {
+        Self::from_vec(decode(text)?)
+    }
+
+    /// Parse **tolerantly**, forgiving the reformatting a round trip through a model
+    /// or a transcript introduces.
+    ///
+    /// Any run of characters that is not an ASCII letter separates words, and case is
+    /// ignored. Correspondingly liberal about what it will call a value: `home page`
+    /// parses. Use [`UnigramId::parse`] anywhere that matters.
+    pub fn recover(text: &str) -> Result<Self, ParseError> {
+        Self::from_vec(decode_recovered(text)?)
+    }
+
+    /// The bytes this identifier carries.
+    ///
+    /// Store these. The word form is a rendering, cheap to produce wherever it will
+    /// actually be read, and `N` bytes is a far better thing to keep in a column than
+    /// the string.
+    pub const fn as_bytes(&self) -> &[u8; N] {
+        &self.0
+    }
+
+    /// Consume the identifier, yielding its bytes.
+    pub const fn into_bytes(self) -> [u8; N] {
+        self.0
+    }
+
+    fn from_vec(bytes: Vec<u8>) -> Result<Self, ParseError> {
+        <[u8; N]>::try_from(bytes.as_slice())
+            .map(Self)
+            .map_err(|_| ParseError::WrongLength {
+                expected: N,
+                found: bytes.len(),
+            })
+    }
+}
+
+impl<const N: usize> fmt::Display for UnigramId<N> {
+    /// The canonical rendering: `N` alphabet words joined by single spaces.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, byte) in self.0.iter().enumerate() {
+            if index > 0 {
+                f.write_str(" ")?;
+            }
+            f.write_str(ALPHABET[*byte as usize])?;
+        }
+        Ok(())
+    }
+}
+
+impl<const N: usize> From<[u8; N]> for UnigramId<N> {
+    fn from(bytes: [u8; N]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl<const N: usize> From<UnigramId<N>> for [u8; N] {
+    fn from(id: UnigramId<N>) -> Self {
+        id.0
+    }
+}
 
 /// Why a sequence of words could not be decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,9 +359,15 @@ pub enum DecodeError {
     /// the value that was sent, and inventing the byte it stood for would answer a
     /// question nobody asked with a value nobody issued.
     UnknownWord { position: usize, word: String },
+    /// Well-formed alphabet words, but not in canonical spelling — wrong case, or
+    /// separated by something other than a single space. Only [`decode`] reports
+    /// this; [`decode_recovered`] accepts these and returns the bytes.
+    NotCanonical { position: usize },
     /// No alphabet words at all. The encoding of no bytes is the empty string, which
     /// is never a value a caller means to transmit, so decoding one is an error
-    /// rather than an empty success.
+    /// rather than an empty success. [`encode`] still renders `&[]` as `""`; the
+    /// asymmetry is deliberate, and it is why the bijection is claimed over nonempty
+    /// byte strings.
     Empty,
 }
 
@@ -219,6 +379,11 @@ impl fmt::Display for DecodeError {
                 "`{word}` (word {}) is not in the unigram alphabet",
                 position + 1
             ),
+            Self::NotCanonical { position } => write!(
+                f,
+                "word {} is not in canonical form (lowercase, single-space separated)",
+                position + 1
+            ),
             Self::Empty => f.write_str("no unigram words found"),
         }
     }
@@ -226,14 +391,39 @@ impl fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-/// Split on any run of characters that is not an ASCII letter.
-///
-/// Being this liberal is what lets a value survive a round trip through a model or
-/// a transcript: hyphens, newlines, commas, quotes, and stray punctuation all read
-/// as separators, so only the words themselves have to arrive intact.
-fn split_words(text: &str) -> impl Iterator<Item = &str> {
-    text.split(|c: char| !c.is_ascii_alphabetic())
-        .filter(|word| !word.is_empty())
+/// Why a string could not be parsed as a [`UnigramId`] of a particular width.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    /// The words themselves did not decode.
+    Decode(DecodeError),
+    /// The words decoded, but there were the wrong number of them.
+    WrongLength { expected: usize, found: usize },
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode(error) => error.fmt(f),
+            Self::WrongLength { expected, found } => {
+                write!(f, "expected {expected} words, found {found}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Decode(error) => Some(error),
+            Self::WrongLength { .. } => None,
+        }
+    }
+}
+
+impl From<DecodeError> for ParseError {
+    fn from(error: DecodeError) -> Self {
+        Self::Decode(error)
+    }
 }
 
 /// Encode bytes as space-joined alphabet words, one word per byte.
@@ -242,6 +432,9 @@ fn split_words(text: &str) -> impl Iterator<Item = &str> {
 /// become twenty-six characters, which is a poor thing to keep in a column, and this
 /// is a table lookup per byte in each direction. Store the bytes; render the words
 /// wherever they will actually be read.
+///
+/// Encoding no bytes yields the empty string, which [`decode`] refuses. See
+/// [`DecodeError::Empty`].
 pub fn encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 8);
     for (index, byte) in bytes.iter().enumerate() {
@@ -253,14 +446,52 @@ pub fn encode(bytes: &[u8]) -> String {
     out
 }
 
-/// Decode alphabet words back to the bytes they carry.
+/// Decode the **canonical** form: lowercase alphabet words joined by single spaces.
 ///
-/// Liberal in what it accepts — any run of characters that is not an ASCII letter
-/// separates words, and case is ignored — but exact in what it returns: every word
-/// must be in the alphabet, or the value is refused and the offending word named.
+/// Exactly one accepted spelling per value, which is what makes this the parser to
+/// use where a value is about to be trusted. For text that has been through a model,
+/// see [`decode_recovered`].
 pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
+    if text.is_empty() {
+        return Err(DecodeError::Empty);
+    }
     let mut bytes = Vec::new();
-    for (position, word) in split_words(text).enumerate() {
+    for (position, word) in text.split(' ').enumerate() {
+        match ALPHABET.binary_search(&word) {
+            Ok(index) => bytes.push(index as u8),
+            // Distinguish "would have decoded, spelled differently" from "not a word
+            // at all": the first is a caller sending a non-canonical form, the second
+            // is a bad value, and they call for different responses.
+            Err(_) if decodes_ignoring_case(word) => {
+                return Err(DecodeError::NotCanonical { position })
+            }
+            Err(_) => {
+                return Err(DecodeError::UnknownWord {
+                    position,
+                    word: word.to_string(),
+                })
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+/// Decode **tolerantly**, forgiving the reformatting a round trip introduces.
+///
+/// Any run of characters that is not an ASCII letter separates words, and case is
+/// ignored, so a value that came back hyphenated, re-wrapped across lines,
+/// comma-joined, quoted, or shouted still yields the bytes that were sent.
+///
+/// Being this liberal is what lets a value survive the trip; it is also why this must
+/// not be the parser at a trust boundary. Under it, `home page` is a valid encoded
+/// value, since both are alphabet words. Use [`decode`] where that matters.
+pub fn decode_recovered(text: &str) -> Result<Vec<u8>, DecodeError> {
+    let mut bytes = Vec::new();
+    for (position, word) in text
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|word| !word.is_empty())
+        .enumerate()
+    {
         let lowered = word.to_ascii_lowercase();
         match ALPHABET.binary_search(&lowered.as_str()) {
             Ok(index) => bytes.push(index as u8),
@@ -278,60 +509,31 @@ pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
     Ok(bytes)
 }
 
+/// Whether a word is an alphabet entry in some other case.
+fn decodes_ignoring_case(word: &str) -> bool {
+    word.is_ascii()
+        && ALPHABET
+            .binary_search(&word.to_ascii_lowercase().as_str())
+            .is_ok()
+}
+
 /// Mint `bytes` bytes of fresh entropy, encoded.
 ///
-/// Four bytes is a reasonable default for a short-lived, rate-limited nonce: 32
-/// bits in four flat tokens, where the same 32 bits as hex average 6 and can reach
-/// 8. It is a poor default for anything else — see "Choosing a length" above, which
-/// is the difference between a value that cannot collide and one that cannot be
-/// guessed.
-///
-/// # Panics
-///
-/// If the OS entropy source is unavailable. That is not a condition a caller can
-/// do anything useful with, and returning a predictable value instead would be far
-/// worse than stopping.
-pub fn mint(bytes: usize) -> String {
+/// See [`UnigramId::try_random`] for the typed form, and "Choosing a length" in the
+/// crate documentation for how many bytes to ask for.
+pub fn try_mint(bytes: usize) -> Result<String, getrandom::Error> {
     let mut buffer = vec![0u8; bytes];
-    getrandom::fill(&mut buffer).expect("OS entropy source unavailable");
-    encode(&buffer)
-}
-
-/// Reduce a value to the form comparisons are made in: trimmed, lowercased, and
-/// with internal whitespace runs collapsed to a single space.
-///
-/// Deliberately preserves every non-whitespace character, so this is safe to apply
-/// to a string that is *not* an encoded value — a legacy hex token, say — without
-/// mangling it. [`decode`]'s liberal splitting is the opposite trade and belongs
-/// only where the bytes are actually wanted back.
-pub fn normalize(text: &str) -> String {
-    text.split_whitespace()
-        .map(|part| part.to_ascii_lowercase())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Compare a value that was issued against one a caller presented, tolerating the
-/// damage a round trip through a model or a transcript does.
-///
-/// When both sides are encoded values the comparison is on the decoded bytes, so
-/// separator and case damage on the presented side cannot matter. Otherwise it
-/// falls back to comparing [`normalize`]d strings, which is what lets a value
-/// issued in some older format still match itself without a migration.
-pub fn matches(issued: &str, presented: &str) -> bool {
-    if let (Ok(issued_bytes), Ok(presented_bytes)) = (decode(issued), decode(presented)) {
-        return issued_bytes == presented_bytes;
-    }
-    normalize(issued) == normalize(presented)
+    getrandom::fill(&mut buffer)?;
+    Ok(encode(&buffer))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Everything cost-related lives in `verify-alphabet.py`, which measures the
-    /// five tokenizer families this crate claims. What is left here is what can be
-    /// checked without a vocabulary: the table's structure, and the codec over it.
+    /// Everything cost-related lives in `verify-alphabet.py`, which measures the five
+    /// tokenizer families this crate claims. What is left here is what can be checked
+    /// without a vocabulary: the table's structure, and the codec over it.
     #[test]
     fn the_alphabet_is_sorted_unique_and_plain_lowercase() {
         let mut sorted = ALPHABET;
@@ -347,26 +549,80 @@ mod tests {
         }
     }
 
-    /// Distance from every other entry is what turns a one-character slip into a
-    /// refusal instead of a different valid byte. Without it the codec is only as
-    /// honest as hex.
+    /// The table is the wire format. This pins it, so that changing an entry has to
+    /// be a deliberate act with this constant updated alongside it, rather than an
+    /// edit that leaves every previously issued value decoding to something else
+    /// while the suite stays green.
     #[test]
-    fn no_two_entries_are_within_one_edit_of_each_other() {
-        fn within_one_edit(a: &str, b: &str) -> bool {
-            let (a, b) = if a.len() > b.len() { (b, a) } else { (a, b) };
-            let (short, long) = (a.as_bytes(), b.as_bytes());
-            match long.len() - short.len() {
-                0 => short.iter().zip(long).filter(|(x, y)| x != y).count() <= 1,
-                1 => {
-                    let skip = short.iter().zip(long).take_while(|(x, y)| x == y).count();
-                    short[skip..] == long[skip + 1..]
-                }
-                _ => false,
+    fn the_alphabet_matches_its_frozen_digest() {
+        const FROZEN: u64 = 0x1771_3c01_9799_607a;
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for (index, word) in ALPHABET.iter().enumerate() {
+            if index > 0 {
+                hash = (hash ^ u64::from(b'\n')).wrapping_mul(PRIME);
+            }
+            for byte in word.bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
             }
         }
+        assert_eq!(
+            hash, FROZEN,
+            "the alphabet changed: every previously issued value now decodes differently"
+        );
+    }
+
+    /// Distance from every other entry is what turns a one-character slip into a
+    /// refusal instead of a different valid byte.
+    #[test]
+    fn no_two_entries_are_within_one_edit_of_each_other() {
         for (i, a) in ALPHABET.iter().enumerate() {
             for b in &ALPHABET[i + 1..] {
                 assert!(!within_one_edit(a, b), "`{a}` and `{b}` are one edit apart");
+            }
+        }
+    }
+
+    fn within_one_edit(a: &str, b: &str) -> bool {
+        let (a, b) = if a.len() > b.len() { (b, a) } else { (a, b) };
+        let (short, long) = (a.as_bytes(), b.as_bytes());
+        match long.len() - short.len() {
+            0 => short.iter().zip(long).filter(|(x, y)| x != y).count() <= 1,
+            1 => {
+                let skip = short.iter().zip(long).take_while(|(x, y)| x == y).count();
+                short[skip..] == long[skip + 1..]
+            }
+            _ => false,
+        }
+    }
+
+    /// The edit-distance rule does not reach morphology: `training` is four deletions
+    /// from `train`, so nothing above stops both from being entries — and 0.1.x
+    /// shipped with four such pairs. A model regurgitating text is far likelier to
+    /// normalise a suffix than to mistype a character, which makes this the mutation
+    /// worth ruling out, and it is only ruled out if it is tested.
+    #[test]
+    fn no_entry_is_reachable_from_another_by_a_suffix() {
+        const SUFFIXES: [&str; 15] = [
+            "s", "es", "ing", "ed", "er", "ers", "ors", "ion", "ions", "ies", "ment", "ments",
+            "al", "ly", "y",
+        ];
+        for entry in ALPHABET {
+            for suffix in SUFFIXES {
+                for stem in [
+                    entry.to_string(),
+                    entry.strip_suffix('e').unwrap_or(entry).to_string(),
+                    format!("{}i", entry.strip_suffix('y').unwrap_or(entry)),
+                ] {
+                    let derived = format!("{stem}{suffix}");
+                    if derived == entry {
+                        continue;
+                    }
+                    assert!(
+                        ALPHABET.binary_search(&derived.as_str()).is_err(),
+                        "`{entry}` becomes `{derived}` by adding `{suffix}`, and both are entries"
+                    );
+                }
             }
         }
     }
@@ -375,6 +631,7 @@ mod tests {
     fn every_byte_round_trips() {
         let all: Vec<u8> = (0..=255).collect();
         assert_eq!(decode(&encode(&all)).unwrap(), all);
+        assert_eq!(decode_recovered(&encode(&all)).unwrap(), all);
     }
 
     #[test]
@@ -384,10 +641,21 @@ mod tests {
         assert_eq!(decode(&encoded).unwrap(), vec![7]);
     }
 
-    /// The point of the codec: a value mangled on its way through a model still
-    /// decodes to what was sent.
+    /// The empty case is the one place the bijection does not hold, so it is pinned
+    /// rather than left to be discovered.
     #[test]
-    fn decoding_survives_the_mangling_a_round_trip_introduces() {
+    fn the_empty_encoding_is_refused_by_both_parsers() {
+        assert_eq!(encode(&[]), "");
+        assert_eq!(decode(""), Err(DecodeError::Empty));
+        assert_eq!(decode_recovered(""), Err(DecodeError::Empty));
+        assert_eq!(decode_recovered("   -- \n"), Err(DecodeError::Empty));
+        assert_eq!(try_mint(0).unwrap(), "");
+    }
+
+    /// The point of the tolerant parser: a value mangled on its way through a model
+    /// still yields what was sent.
+    #[test]
+    fn recovery_survives_the_mangling_a_round_trip_introduces() {
         let bytes = [0x3d, 0x9a, 0x00, 0xff];
         let encoded = encode(&bytes);
         for mangled in [
@@ -398,20 +666,49 @@ mod tests {
             encoded.replace(' ', "\n"),
             format!("\"{}\"", encoded.replace(' ', "   ")),
         ] {
-            assert_eq!(decode(&mangled).unwrap(), bytes, "{mangled}");
+            assert_eq!(decode_recovered(&mangled).unwrap(), bytes, "{mangled}");
         }
+    }
+
+    /// And the point of having two: the canonical parser refuses every one of those,
+    /// so a boundary that wants one spelling per value can have it.
+    #[test]
+    fn the_canonical_parser_refuses_what_recovery_accepts() {
+        let bytes = [0x3d, 0x9a, 0x00, 0xff];
+        let encoded = encode(&bytes);
+        for mangled in [
+            encoded.to_uppercase(),
+            format!("  {encoded}  "),
+            encoded.replace(' ', "-"),
+            encoded.replace(' ', "  "),
+            format!("\"{encoded}\""),
+        ] {
+            assert!(decode(&mangled).is_err(), "canonical accepted `{mangled}`");
+        }
+        assert_eq!(decode(&encoded).unwrap(), bytes);
+    }
+
+    /// A wrong-case word decodes under recovery and is reported as non-canonical
+    /// rather than unknown, because the two call for different responses.
+    #[test]
+    fn a_case_slip_is_reported_as_non_canonical_not_unknown() {
+        let encoded = format!("{} {}", ALPHABET[1], ALPHABET[2].to_uppercase());
+        assert_eq!(
+            decode(&encoded),
+            Err(DecodeError::NotCanonical { position: 1 })
+        );
+        assert_eq!(decode_recovered(&encoded).unwrap(), vec![1, 2]);
     }
 
     #[test]
     fn an_unknown_word_is_refused_and_named() {
         let encoded = format!("{} zzzz {}", ALPHABET[1], ALPHABET[2]);
-        assert_eq!(
-            decode(&encoded),
-            Err(DecodeError::UnknownWord {
-                position: 1,
-                word: "zzzz".to_string(),
-            })
-        );
+        let expected = Err(DecodeError::UnknownWord {
+            position: 1,
+            word: "zzzz".to_string(),
+        });
+        assert_eq!(decode(&encoded), expected);
+        assert_eq!(decode_recovered(&encoded), expected);
     }
 
     /// A near-miss is the case that matters: one character off a real entry must be
@@ -419,51 +716,87 @@ mod tests {
     #[test]
     fn a_one_character_slip_is_refused_rather_than_read_as_another_byte() {
         assert!(matches!(
-            decode("accesx"),
+            decode_recovered("accesx"),
             Err(DecodeError::UnknownWord { .. })
         ));
     }
 
+    /// Ordinary prose made of alphabet words parses under recovery. Pinned because it
+    /// is the price of that parser, and a caller reaching for it should know.
     #[test]
-    fn an_empty_value_is_refused() {
-        assert_eq!(decode(""), Err(DecodeError::Empty));
-        assert_eq!(decode("   -- \n"), Err(DecodeError::Empty));
+    fn recovery_accepts_ordinary_prose_made_of_alphabet_words() {
+        assert!(decode_recovered("home page").is_ok());
+        assert!(decode("home page").is_ok());
     }
 
     #[test]
-    fn mint_produces_one_word_per_requested_byte() {
-        let minted = mint(4);
+    fn an_id_round_trips_through_its_canonical_rendering() {
+        let id = UnigramId::from_bytes([0x3d, 0x9a, 0x00, 0xff]);
+        assert_eq!(id.to_string(), "description note access world");
+        assert_eq!(UnigramId::<4>::parse(&id.to_string()).unwrap(), id);
+        assert_eq!(
+            UnigramId::<4>::recover("DESCRIPTION-NOTE-ACCESS-WORLD").unwrap(),
+            id
+        );
+        assert_eq!(id.as_bytes(), &[0x3d, 0x9a, 0x00, 0xff]);
+        assert_eq!(id.into_bytes(), [0x3d, 0x9a, 0x00, 0xff]);
+    }
+
+    /// Length is part of the type, so a value that lost or gained a word is refused
+    /// on arrival rather than decoding to a shorter id that compares unequal later.
+    #[test]
+    fn an_id_of_the_wrong_width_is_refused() {
+        let five = encode(&[1, 2, 3, 4, 5]);
+        assert_eq!(
+            UnigramId::<4>::parse(&five),
+            Err(ParseError::WrongLength {
+                expected: 4,
+                found: 5
+            })
+        );
+        assert!(UnigramId::<6>::parse(&five).is_err());
+        assert_eq!(
+            UnigramId::<5>::parse(&five).unwrap().as_bytes(),
+            &[1, 2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn a_random_id_is_the_requested_width_and_not_the_same_twice() {
+        let id: UnigramId<8> = UnigramId::try_random().unwrap();
+        assert_eq!(id.to_string().split(' ').count(), 8);
+        assert_eq!(UnigramId::<8>::parse(&id.to_string()).unwrap(), id);
+        assert_ne!(
+            UnigramId::<16>::try_random().unwrap(),
+            UnigramId::<16>::try_random().unwrap()
+        );
+    }
+
+    #[test]
+    fn minting_produces_one_word_per_requested_byte() {
+        let minted = try_mint(4).unwrap();
         assert_eq!(minted.split(' ').count(), 4, "{minted}");
         assert_eq!(decode(&minted).unwrap().len(), 4);
-        assert_ne!(mint(8), mint(8));
     }
 
+    /// Neither parser may panic, whatever arrives.
     #[test]
-    fn matching_tolerates_mangling_of_an_encoded_value() {
-        let issued = mint(4);
-        assert!(matches(&issued, &issued));
-        assert!(matches(&issued, &issued.to_uppercase()));
-        assert!(matches(
-            &issued,
-            &format!("  {}  ", issued.replace(' ', " - "))
-        ));
-        assert!(!matches(&issued, &mint(4)));
-    }
-
-    /// Values issued in an older opaque format have to keep matching themselves, or
-    /// swapping the minted form would strand every token outstanding at the moment
-    /// of the upgrade.
-    #[test]
-    fn matching_still_compares_values_that_are_not_encoded_at_all() {
-        let legacy = "3925ca9a0065442496cc231d6ae48870";
-        assert!(matches(legacy, legacy));
-        assert!(matches(legacy, &format!("  {}  ", legacy.to_uppercase())));
-        assert!(!matches(legacy, "3925ca9a0065442496cc231d6ae48871"));
-        assert!(!matches(legacy, &mint(4)));
-    }
-
-    #[test]
-    fn normalize_leaves_a_non_encoded_string_intact() {
-        assert_eq!(normalize("  3925CA9A-0065  "), "3925ca9a-0065");
+    fn no_input_panics_either_parser() {
+        for text in [
+            "\u{0}",
+            "\u{200b}",
+            "🙂",
+            "access\u{200b}account",
+            &"a".repeat(10_000),
+            &"access ".repeat(1_000),
+            "-",
+            " ",
+            "  access  ",
+        ] {
+            let _ = decode(text);
+            let _ = decode_recovered(text);
+            let _ = UnigramId::<4>::parse(text);
+            let _ = UnigramId::<4>::recover(text);
+        }
     }
 }

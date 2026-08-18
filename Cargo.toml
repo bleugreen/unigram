@@ -1,7 +1,8 @@
 [package]
 name = "unigram"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.78"
 license = "MIT"
 description = "Bijective codec between bytes and single-token words, for moving identifiers through a language model"
 repository = "https://github.com/bleugreen/unigram"

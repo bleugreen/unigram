@@ -1,6 +1,12 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["ctok>=1.0", "tiktoken", "transformers", "sentencepiece", "protobuf"]
+# dependencies = [
+#   "ctok==1.0.0",
+#   "tiktoken==0.14.0",
+#   "transformers==5.15.0",
+#   "sentencepiece==0.2.1",
+#   "protobuf==5.29.2",
+# ]
 # ///
 """Check every cost claim `unigram` makes, against all five tokenizer families.
 
@@ -10,7 +16,9 @@ Everything the crate is NAMED for is checked here instead:
 
   * every alphabet entry costs exactly one token, in all five families;
   * the property composes -- an encoded value costs one token per byte;
-  * that beats the hex it replaces, on the mean and on the worst case;
+  * it survives the contexts a value actually sits in, to within one token for
+    the opening word;
+  * it beats the hex it replaces, on the mean;
   * and the space between two words is free, where no other separator is.
 
     uv run verify-alphabet.py
@@ -19,12 +27,14 @@ Exits non-zero and names every offending entry if any of that stops holding. Run
 it after ANY edit to the ALPHABET table in src/lib.rs. Requires network access on
 first run, to fetch the vocabularies.
 
-Every measurement is MARGINAL -- the cost of appending text to a carrier word,
-minus the carrier alone. That is the position an encoded value actually occupies:
-inside a message, after something else. Measuring a string on its own would also
-charge for whatever frame the family puts around a whole message, and for the
-first word opening the string unprefixed, neither of which a byte in a real
-encoding pays.
+Every measurement is MARGINAL: the cost of inserting text into a surrounding
+context, minus the cost of that context alone. That is what a caller is actually
+charged for adding an identifier to a message, and it makes the per-message frame
+each family adds cancel out.
+
+Dependencies and the tokenizer revision are pinned exactly, so a run that passes
+here passes again later. The claims are about THESE tokenizer versions; upstream
+is free to change, which is the point of pinning rather than hoping.
 """
 
 import pathlib
@@ -37,6 +47,24 @@ EXPECTED = 256
 CARRIER = "the"
 SAMPLE_PAYLOAD_SIZES = (4, 8, 16, 32)
 SAMPLES = 64
+LLAMA_REPO = "hf-internal-testing/llama-tokenizer"
+LLAMA_REVISION = "d02ad6cb9dd2c2296a6332199fa2fdca5938fef0"
+
+# Where an encoded value actually sits, and what precedes its opening word. Only
+# the FIRST word can be charged extra: every later word has a space before it.
+CONTEXTS = {
+    "carrier 'the X'": ("the ", ""),
+    "start of string": ("", ""),
+    "after newline": ("line one\n", ""),
+    'JSON "id":"X"': ('{"id":"', '"}'),
+    "after colon-space": ("id: ", ""),
+    "in prose, X.": ("the token is ", "."),
+    "markdown `X`": ("use `", "`"),
+    "after open paren": ("token (", ")"),
+}
+# One token, for the opening word when no space precedes it. Anything more would
+# mean the per-byte claim does not survive being embedded.
+MAX_OPENING_OVERHEAD = 1
 
 
 def alphabet() -> list[str]:
@@ -66,13 +94,12 @@ def families() -> Iterator[tuple[str, Callable[[str], int]]]:
 
     from transformers import AutoTokenizer
 
-    llama = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
+    llama = AutoTokenizer.from_pretrained(LLAMA_REPO, revision=LLAMA_REVISION)
     yield "llama-sp", lambda text: len(llama.tokenize(text))
 
-    # ctok reconstructs Claude's counts offline; cairn-tokenize is a Rust port of
-    # the same model. Unofficial, and not Anthropic's tokenizer -- but it is the
-    # only offline counter for the family, and it is exact on every corpus its
-    # authors gate against.
+    # ctok reconstructs Claude's counts offline. Unofficial, and not Anthropic's
+    # tokenizer -- but it is the only offline counter for the family, and it is
+    # exact on every corpus its authors gate against.
     from ctok import token_count
 
     yield "claude-v5", lambda text: token_count(text, "5.0")
@@ -95,8 +122,11 @@ def check(name: str, raw_count: Callable[[str], int], words: list[str]) -> list[
     base = raw_count(CARRIER)
 
     def cost(text: str) -> int:
-        """The marginal cost of `text` where an encoded value actually sits."""
+        """The marginal cost of `text` where an encoded value usually sits."""
         return raw_count(f"{CARRIER} {text}") - base
+
+    def cost_in(text: str, prefix: str, suffix: str) -> int:
+        return raw_count(prefix + text + suffix) - raw_count(prefix + suffix)
 
     def encode(payload: bytes) -> str:
         return " ".join(words[byte] for byte in payload)
@@ -116,7 +146,7 @@ def check(name: str, raw_count: Callable[[str], int], words: list[str]) -> list[
         mean = sum(hex_costs) / len(hex_costs)
         print(
             f"{name:12s}  {size:2d} bytes: unigram {min(word_costs)}-{max(word_costs)}"
-            f"  vs hex {mean:.1f} mean / {max(hex_costs)} worst"
+            f"  vs hex {mean:.1f} mean / {max(hex_costs)} sample max"
         )
         # The invariant, not the average: cost is one token per byte for EVERY
         # value, so an encoded value's size is known before it is minted. Hex cost
@@ -125,6 +155,25 @@ def check(name: str, raw_count: Callable[[str], int], words: list[str]) -> list[
             failures.append(f"{name}: {size}-byte values cost {sorted(flat)} tokens, not {size}")
         if mean <= size:
             failures.append(f"{name}: hex is no more expensive at {size} bytes ({mean:.1f})")
+
+    # The claim has to survive being embedded, not just being appended to a word.
+    # Only the opening word can be charged extra, and only by one.
+    value = encode(bytes(range(1, 5)))
+    overheads = {}
+    for label, (prefix, suffix) in CONTEXTS.items():
+        overheads[label] = cost_in(value, prefix, suffix) - 4
+    worst = max(overheads.values())
+    print(
+        f"{name:12s}  contexts: opening-word overhead "
+        + ", ".join(f"{label} {o:+d}" for label, o in overheads.items())
+    )
+    failures += [
+        f"{name}: in context {label!r} a 4-byte value costs {4 + o} tokens, not 4+{MAX_OPENING_OVERHEAD}"
+        for label, o in overheads.items()
+        if o > MAX_OPENING_OVERHEAD
+    ]
+    if worst > MAX_OPENING_OVERHEAD:
+        failures.append(f"{name}: worst-context overhead is {worst}")
 
     # The separator, checked so nobody "tidies" it. A space between two words is
     # absorbed into the space-prefixed vocabulary entry that follows it and costs

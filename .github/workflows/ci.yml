@@ -4,24 +4,40 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # The tokenizer job pins its dependencies, so it cannot notice upstream moving.
+    # This is the canary that does: same pins, run weekly, so a vocabulary change
+    # surfaces here rather than in someone's token budget.
+    - cron: "0 6 * * 1"
 
 jobs:
   rust:
     name: cargo test, clippy, fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup component add clippy rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    name: builds on the declared MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.78.0
+      - run: cargo build
 
   alphabet:
     # The cost claims live here, not in cargo test: the five vocabularies this
     # measures against are far too large to vendor for a unit test.
-    name: alphabet cost, all five tokenizers
+    name: alphabet cost, all five tokenizer families
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
       - run: uv run verify-alphabet.py
