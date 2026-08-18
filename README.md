@@ -2,33 +2,23 @@
 
 A bijective codec between bytes and words that cost exactly one LLM token.
 
-The same four bytes, twice:
-
 ```text
-hex      a14ed61a                                            6 tokens
-unigram  people error social career                          4 tokens
+a14ed61a                          ->  people error social career
+
+8623a771b764ce50bb85371ff65aebe9  ->  login city population income question head
+                                      season example region location count century
+                                      update football task table
 ```
 
-The same sixteen:
+An identifier becomes something you can read. Say it out loud, carry it across a room
+or between two windows, tell it apart from its neighbour at a glance, recognise it
+again an hour later — the ordinary things a name affords. Ids spend their lives in
+prompts, logs, and error messages, being looked at; this makes that free.
 
-```text
-hex      8623a771b764ce50bb85371ff65aebe9                   21 tokens
-unigram  login city population income question head season
-         example region location count century update
-         football task table                                16 tokens
-```
-
-Two things are going on. The words are **cheaper**, and flatly so — one token per
-byte, the same for every value, where hex swings with the digits. And they are
-**readable**: you can say one out loud, carry it between two windows without
-alt-tabbing twice, tell it apart from its neighbour at a glance, and recognise it
-again an hour later.
-
-That second one is the whole reason to bother. A hash is not hard for anything to
-copy — models and people both handle it fine. It is just noise to look at, a pain to
-recite, and something your eye slides off in a log. Every id in a prompt, a
-transcript, or an error message gets paid for twice: once in tokens, and once in the
-attention of whoever has to read it.
+It is also the densest form the trip allows. One word is one byte and one token, so a
+value costs exactly as many tokens as it carries bytes — flat, for every value, with
+the spaces between words costing nothing at all. The four words above carry 32 bits
+in 4 tokens; the sixteen carry 128 in 16.
 
 ## Using it
 

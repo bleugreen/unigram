@@ -1,16 +1,20 @@
 //! `unigram` — a bijective codec between bytes and words that cost one LLM token.
 //!
-//! Machine identifiers are routinely handed to a language model and asked back: an
-//! acknowledgement token, a digest, a correlation id. Hexadecimal makes a poor
-//! carrier for that trip on two counts. It is expensive, because a hex run shreds
-//! into a fragment every character or two under every tokenizer. And it is unreadable
-//! — not hard to copy, models and people both handle it fine, but noise to look at,
-//! awkward to say out loud, and impossible to hold in your head between two windows.
-//! Every id in a log, a prompt, or an error message is paid for twice: once in tokens
-//! and once in the attention of whoever has to read it.
+//! Machine identifiers spend their lives being looked at: handed to a language model
+//! and asked back, printed in a log, quoted in an error, read off a page by whoever
+//! is debugging at the time. This crate carries them as words, so that an id becomes
+//! something a reader can hold — `department number access world` can be said out
+//! loud, told apart from its neighbour at a glance, and recognised again an hour
+//! later, which is what a name is for.
 //!
-//! This crate carries the same bytes as words drawn from a fixed alphabet of 256.
-//! Two properties follow from that size, and they are the whole design:
+//! ```
+//! let words = unigram::encode(&[0x3d, 0x9a, 0x00, 0xff]);
+//! assert_eq!(words, "department number access world");
+//! assert_eq!(unigram::decode(&words).unwrap(), vec![0x3d, 0x9a, 0x00, 0xff]);
+//! ```
+//!
+//! It is also the densest form the trip allows. The words come from a fixed alphabet
+//! of 256, and two properties follow from that size — they are the whole design:
 //!
 //! - **One word is exactly one byte.** Encoding is a table lookup per byte with no
 //!   bit-packing, no padding, and no length convention; decoding is its inverse.
@@ -34,15 +38,6 @@
 //!   Llama's SentencePiece, where it averages 58.2 against the same flat 32.
 //!   `verify-alphabet.py` prints the table for every family it checks.
 //!
-//! Words also read as themselves. `department number access world` can be recited,
-//! skimmed past, told apart from its neighbour at a glance, and recognised again an
-//! hour later — none of which `3d9a00ff` affords.
-//!
-//! ```
-//! let words = unigram::encode(&[0x3d, 0x9a, 0x00, 0xff]);
-//! assert_eq!(words, "department number access world");
-//! assert_eq!(unigram::decode(&words).unwrap(), vec![0x3d, 0x9a, 0x00, 0xff]);
-//! ```
 //!
 //! ## Why the join is a space
 //!
