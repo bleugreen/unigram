@@ -41,6 +41,12 @@ and named, never skipped or guessed at.
 strings otherwise — so values issued in some older format keep matching themselves
 without a migration.
 
+Store the bytes, not the words. Four bytes become twenty-six characters, which is a
+poor thing to put in a column and index; `encode` is a table lookup and `decode` a
+binary search per word, so the readable form is cheap to produce at whatever boundary
+wants it — the prompt, the log line, the rendered page — and need not exist anywhere
+else.
+
 ## What it costs
 
 One word is one byte, and one word is one token, so an encoded value costs one token

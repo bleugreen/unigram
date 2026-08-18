@@ -216,6 +216,11 @@ fn split_words(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Encode bytes as space-joined alphabet words, one word per byte.
+///
+/// Cheap enough to call at a boundary rather than storing the result: four bytes
+/// become twenty-six characters, which is a poor thing to keep in a column, and this
+/// is a table lookup per byte in each direction. Store the bytes; render the words
+/// wherever they will actually be read.
 pub fn encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 8);
     for (index, byte) in bytes.iter().enumerate() {

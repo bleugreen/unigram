@@ -1,6 +1,6 @@
 [package]
 name = "unigram"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 license = "MIT"
 description = "Bijective codec between bytes and single-token words, for moving identifiers through a language model"
