@@ -200,9 +200,9 @@ pub fn encode(bytes: &[u8]) -> String {
 
 /// Decode alphabet words back to the bytes they carry.
 ///
-/// Liberal in what it accepts — see [`split_words`] — but exact in what it returns:
-/// every word must be in the alphabet, or the value is refused and the offending
-/// word named.
+/// Liberal in what it accepts — any run of characters that is not an ASCII letter
+/// separates words, and case is ignored — but exact in what it returns: every word
+/// must be in the alphabet, or the value is refused and the offending word named.
 pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
     let mut bytes = Vec::new();
     for (position, word) in split_words(text).enumerate() {
