@@ -18,21 +18,17 @@ unigram  login city population income question head season
          football task table                                16 tokens
 ```
 
-Now corrupt one character of each.
+Two things are going on. The words are **cheaper**, and flatly so — one token per
+byte, the same for every value, where hex swings with the digits. And they are
+**readable**: you can say one out loud, carry it between two windows without
+alt-tabbing twice, tell it apart from its neighbour at a glance, and recognise it
+again an hour later.
 
-```text
-hex      a14ed61a  ->  a14ed61b     still a valid digest, and nothing can tell
-
-unigram  people error social career  ->  people errer social career
-         Err(UnknownWord { position: 1, word: "errer" })
-```
-
-That is the whole pitch. Machine identifiers are routinely handed to a language model
-and asked back — an acknowledgement token, a digest, a correlation id — and hex is
-the worst available carrier for that trip. It is expensive, because a hex run shreds
-into a fragment every character or two under every tokenizer. And it is *silently*
-fragile, because every character is drawn from the same sixteen, so every corruption
-of a hex digest is another hex digest.
+That second one is the whole reason to bother. A hash is not hard for anything to
+copy — models and people both handle it fine. It is just noise to look at, a pain to
+recite, and something your eye slides off in a log. Every id in a prompt, a
+transcript, or an error message gets paid for twice: once in tokens, and once in the
+attention of whoever has to read it.
 
 ## Using it
 
@@ -128,9 +124,11 @@ constraints:
 - **One token** under Claude, GPT-2/3 (`r50k`, `p50k`), GPT-3.5/4 (`cl100k`), GPT-4o
   (`o200k`), and Llama's SentencePiece — spanning both the BPE and SentencePiece
   families.
-- **No two entries within one character edit of each other.** This is what puts a
-  slipped character outside the alphabet instead of on a different valid word, and it
-  is the property hex cannot have at any length.
+- **No two entries within one character edit of each other.** A slipped character
+  lands outside the alphabet rather than on a different valid word, so `decode`
+  refuses it instead of returning different bytes. This matters less than it sounds —
+  nothing really mangles an id in practice — but it comes free with entries that have
+  to be distinguishable to read in the first place.
 - **Nothing charged** — no death, violence, race, gender, religion, or politics.
   These strings surface unbidden in transcripts, logs, and user-facing errors.
 - **No entry is an inflection of another**, so a dropped plural cannot silently

@@ -1,11 +1,13 @@
 //! `unigram` — a bijective codec between bytes and words that cost one LLM token.
 //!
 //! Machine identifiers are routinely handed to a language model and asked back: an
-//! acknowledgement token, a digest, a correlation id. Hexadecimal is the worst
-//! possible carrier for that trip. It is expensive, because a hex run shreds into a
-//! fragment every character or two under every tokenizer; and it is *undetectably*
-//! fragile, because every character is drawn from the same sixteen, so a corrupted
-//! one still looks like a valid digest.
+//! acknowledgement token, a digest, a correlation id. Hexadecimal makes a poor
+//! carrier for that trip on two counts. It is expensive, because a hex run shreds
+//! into a fragment every character or two under every tokenizer. And it is unreadable
+//! — not hard to copy, models and people both handle it fine, but noise to look at,
+//! awkward to say out loud, and impossible to hold in your head between two windows.
+//! Every id in a log, a prompt, or an error message is paid for twice: once in tokens
+//! and once in the attention of whoever has to read it.
 //!
 //! This crate carries the same bytes as words drawn from a fixed alphabet of 256.
 //! Two properties follow from that size, and they are the whole design:
@@ -32,23 +34,15 @@
 //!   Llama's SentencePiece, where it averages 58.2 against the same flat 32.
 //!   `verify-alphabet.py` prints the table for every family it checks.
 //!
-//! Corruption also stops being silent. The alphabet is 256 words out of every string
-//! that could be written, so a mangled word is overwhelmingly likely to be no word at
-//! all — and [`decode`] refuses it and names it, rather than guessing at the byte it
-//! stood for:
+//! Words also read as themselves. `department number access world` can be recited,
+//! skimmed past, told apart from its neighbour at a glance, and recognised again an
+//! hour later — none of which `3d9a00ff` affords.
 //!
 //! ```
 //! let words = unigram::encode(&[0x3d, 0x9a, 0x00, 0xff]);
 //! assert_eq!(words, "department number access world");
 //! assert_eq!(unigram::decode(&words).unwrap(), vec![0x3d, 0x9a, 0x00, 0xff]);
-//!
-//! // One character of one word, slipped:
-//! let slipped = unigram::decode("department numbor access world");
-//! assert!(slipped.is_err());
 //! ```
-//!
-//! The equivalent hex — `3d9a00ff` becoming `3d9b00ff` — is another valid digest, and
-//! nothing downstream can tell.
 //!
 //! ## Why the join is a space
 //!
@@ -105,9 +99,11 @@
 //!   (`o200k`), and Llama's SentencePiece — spanning both the BPE and SentencePiece
 //!   families. None of those vocabularies is vendored here, so this is checked by a
 //!   script rather than by `cargo test`; see "Changing the alphabet" below.
-//! - **No two entries within one character edit of each other**, which is what makes
-//!   a single-character slip land outside the alphabet instead of on a different
-//!   valid word. This is the property hex cannot have.
+//! - **No two entries within one character edit of each other.** A slipped character
+//!   therefore lands outside the alphabet rather than on a different valid word, so
+//!   [`decode`] refuses it instead of returning different bytes. This matters less
+//!   than it sounds — neither a model nor a copy-paste mangles an id in practice —
+//!   but it is free, given that the entries have to be distinguishable to read.
 //! - **Nothing charged** — no death, violence, race, gender, religion, or politics.
 //!   These strings surface unbidden in transcripts, logs, and user-facing errors.
 //! - **No entry is an inflection of another**, so a dropped plural cannot silently
@@ -190,9 +186,8 @@ pub enum DecodeError {
     /// A word outside the alphabet, and where in the sequence it sat.
     ///
     /// Reported rather than skipped or guessed at: a value that lost a word is not
-    /// the value that was sent, and inventing the byte it stood for would turn a
-    /// visible transcription error back into a silent one — the whole failure mode
-    /// this codec exists to remove.
+    /// the value that was sent, and inventing the byte it stood for would answer a
+    /// question nobody asked with a value nobody issued.
     UnknownWord { position: usize, word: String },
     /// No alphabet words at all. The encoding of no bytes is the empty string, which
     /// is never a value a caller means to transmit, so decoding one is an error
