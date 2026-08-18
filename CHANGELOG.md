@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.3
+
+Documentation only. Two rounds of external review pushed the docs into pre-emptive
+self-defence, and each round added more of it. This removes it.
+
+Gone: a section explaining that a byte-to-word codec is not an error-detecting code
+(all 256 symbols are occupied, so every sequence is a valid value — that is how data
+works, not a caveat); the hedging about whether a character slip is likely; and the
+notes explaining that a parser which reads its whole input reads its whole input.
+`CheckedUnigramId` is documented as the thing to reach for when a value must prove it
+is intact, which is the useful half of what those sections were circling.
+
+The cost comparison is also readable now. 0.3.2 led with a table of token *deltas* as
+ranges across five tokenizers, in the second paragraph, before a reader knew what the
+crate did — and its one scannable column was character count, the number that matters
+least. It is now absolute token counts under Claude with worst-case in parentheses,
+placed after the reader knows what the thing is, with the GPT exception in prose.
+
 ## 0.3.2
 
 Documentation only.

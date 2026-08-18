@@ -26,43 +26,6 @@ One word is one byte and one token, so a value costs exactly as many tokens as i
 carries bytes — flat, for every value, with the spaces between words costing nothing.
 The four words above carry 32 bits in 4 tokens; the sixteen carry 128 in 16.
 
-### Size changes the answer
-
-Both of this encoding's weaknesses arrive together, and they arrive with size. Mean
-marginal tokens saved against each alternative, over 200 deterministic payloads per
-cell, ranged across all five tokenizers — **positive means `unigram` is cheaper**:
-
-| payload  | vs hex          | vs base64url    | `unigram` characters |
-|----------|----------------:|----------------:|---------------------:|
-| 4 bytes  | +1.1 … +3.9     | +0.6 … +2.3     |                   27 |
-| 8 bytes  | +1.9 … +7.1     | +0.1 … +2.8     |                   55 |
-| 16 bytes | +3.2 … +13.4    | −0.7 … +5.3     |                  111 |
-| 32 bytes | +5.6 … +26.2    | −2.5 … +9.2     |                  224 |
-
-At **4 bytes it beats hex, base64url, and base58 in every family measured**, with no
-qualification. At 8 bytes it wins everywhere bar a dead tie with base58 under GPT-4o.
-base64url only pulls ahead at 16 bytes and above, and only under the two newest GPT
-vocabularies, which have memorised base64 fragments — under Claude it loses to
-`unigram` by 5 to 9 tokens at exactly those sizes.
-
-The character column moves the same way. Four words is 27 characters, which is nothing;
-thirty-two words is 224, which is three wrapped lines and genuinely worse to read than
-a 43-character base64 string. Store the bytes and the length costs you nothing at rest,
-but an id that appears in a log line is being looked at, and that is the whole pitch.
-
-So: this is unambiguously the right carrier at **nonce and correlation-id sizes**, which
-is what it was built for, and it weakens steadily as payloads grow. For a 32-byte digest
-that a human never reads, base64url under a GPT model is a defensible choice.
-
-### What it is not
-
-**Not error-detecting on its own.** All 256 symbols are occupied, so any word swapped
-for another word decodes cleanly to different bytes. `CheckedUnigramId` adds a CRC-8
-word for that; the plain type cannot and never will.
-
-**Not a secret.** Readable is the point; unguessable is a separate property that comes
-from width, and comparison here is not constant-time.
-
 ## Using it
 
 ```rust
@@ -88,57 +51,36 @@ variable-length payloads.
 
 ### Two parsers
 
-`parse` is **canonical**: lowercase alphabet words joined by exactly one space, and
-nothing else. Exactly one accepted spelling per value, which is what belongs anywhere
-the value is about to be trusted — a database key, an API parameter, an authorization
-check.
+`parse` is canonical: lowercase alphabet words, single spaces, nothing else. One accepted
+spelling per value, which is what belongs where a value is about to be trusted.
 
-`recover` is **tolerant**: any run of non-letters separates words, and case is
-ignored. A value that came back hyphenated, re-wrapped, comma-joined, quoted, or
-shouted still yields the bytes that were sent.
+`recover` forgives what a round trip through a model does — case, separators, line
+wrapping. It reads the whole input, so isolate the candidate first.
 
-It reads *all* of what it is given, so it recovers a value that has been reformatted,
-not one embedded in a sentence — every word present must be an alphabet word. Isolate
-the candidate first. And under it `error message` is a valid encoded value, because
-both are alphabet words, which is why it must not be the parser at a trust boundary.
-
-### What the alphabet cannot do
-
-All 256 symbols are occupied, so **every sequence of alphabet words is a valid
-value**. A word swapped for another alphabet word, dropped, repeated, or transposed
-decodes cleanly to different bytes, and nothing in the table can notice. No
-arrangement of it changes that; it is what having no spare symbols means.
-
-The alphabet's constraints — a character edit of at least two between entries, no
-prefixes, no suffix-derivatives — are *risk reduction*, not detection. They make it
-unlikely that a small slip lands on another valid word. They cannot make it noticeable
-when one does.
-
-`CheckedUnigramId` is the part that detects. One extra word carries a CRC-8 over the
-payload, catching every single-word substitution and transposition outright, and an
-arbitrary accidental mutation with probability about 255/256. It detects accidents,
-not tampering: anyone who can change the payload can recompute the check word, so a
-hostile party calls for a keyed MAC over the bytes.
+Both refuse an unknown word and name it.
 
 ## What it costs
 
-One word is one byte, and one word is one token, so an encoded value costs one token
-per byte. Against hex of the same payload, under Claude:
+One word is one byte and one token, so an N-byte value costs exactly N tokens, the same
+for every value. Mean tokens under Claude, with the worst of 200 deterministic payloads
+in parentheses:
 
-| payload  | bits | hex (mean / sample max) | `unigram` |
-|----------|------|-------------------------|-----------|
-| 4 bytes  | 32   | 6.0 / 8                 | 4         |
-| 8 bytes  | 64   | 11.1 / 14               | 8         |
-| 16 bytes | 128  | 21.5 / 25               | 16        |
-| 32 bytes | 256  | 42.2 / 49               | 32        |
+| encoding  |     4 bytes |     8 bytes |    16 bytes |    32 bytes |
+|-----------|------------:|------------:|------------:|------------:|
+| `unigram` | **4.0 (4)** | **8.0 (8)** | **16 (16)** | **32 (32)** |
+| hex       |     6.0 (9) |   11.3 (15) |   21.7 (27) |   42.6 (52) |
+| base64url |     6.3 (9) |   10.8 (14) |   21.3 (25) |   41.2 (48) |
+| base58    |     6.6 (9) |   10.9 (13) |   21.2 (26) |   42.0 (47) |
 
-Roughly a quarter cheaper on average — but the flat cost matters more than the mean.
-Hex swings with the value, so a token budget built on it has to assume the worst case.
-This one is known before the value is minted. Those figures are over 64 deterministic
-payloads per size, so the right-hand column is a sample maximum, not a proven bound.
+The parenthesised figure matters as much as the mean. Every other encoding's cost swings
+with the value, so a budget built on one has to assume its worst case; this one is known
+before the value is minted.
 
-The margin narrows under the GPT-4 vocabularies, where 32 bytes of hex average 37.1,
-and widens sharply under Llama's SentencePiece, at 58.2 against the same flat 32.
+Hex loses everywhere, at every size, in every family. The GPT vocabularies have memorised
+base64 fragments, which changes that ranking above 4 bytes — under `o200k`, base64url
+averages 29.5 tokens for 32 bytes against a flat 32, while `unigram` still wins at 4
+bytes (4.0 against 4.5). Nonce and correlation-id widths are what this was built for;
+a 32-byte digest is a worse fit, at 224 characters and no token margin left under GPT.
 
 ### Every context
 
@@ -165,13 +107,6 @@ That is a property of the table, and it was not free. 0.2.0 shipped 22 entries c
 two or three tokens bare, so a value opening with `council` cost N+2 at the start of a
 string — and its verifier tested one payload whose opening word happened to be cheap.
 Both are fixed. The sweep is why the claim needs no exception list.
-
-### Against the alternatives
-
-The full grid is [above](#size-changes-the-answer). What no
-alternative has is the flat column: every `unigram` value of a given width costs
-exactly the same number of tokens, so a budget is known before the value is minted,
-where hex and base64 both have to be provisioned for their worst case.
 
 ### Why not an existing wordlist?
 

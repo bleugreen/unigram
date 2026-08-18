@@ -72,35 +72,30 @@
 //! table and the sweep are fixed. The sweep is why the claim above needs no list of
 //! exceptions.
 //!
-//! ## What it costs against the alternatives
+//! ## Size
 //!
-//! Hex is what this replaces, and it loses to `unigram` at every size in every family
-//! measured. The compact encodings are the real comparison, and there the answer
-//! depends on size. Mean marginal tokens saved, over 200 deterministic payloads per
-//! cell, ranged across all five tokenizers — positive means `unigram` is cheaper:
+//! This encoding's weakness is size. Mean marginal tokens saved against each
+//! alternative, over 200 deterministic payloads per cell, ranged across all five
+//! tokenizers — positive means `unigram` is cheaper:
 //!
-//! | payload  | vs hex       | vs base64url | `unigram` characters |
-//! |----------|-------------:|-------------:|---------------------:|
-//! | 4 bytes  | +1.1 … +3.9  | +0.6 … +2.3  |                   27 |
-//! | 8 bytes  | +1.9 … +7.1  | +0.1 … +2.8  |                   55 |
-//! | 16 bytes | +3.2 … +13.4 | −0.7 … +5.3  |                  111 |
-//! | 32 bytes | +5.6 … +26.2 | −2.5 … +9.2  |                  224 |
+//! | payload  | vs hex       | vs base64url | vs base58    |
+//! |----------|-------------:|-------------:|-------------:|
+//! | 4 bytes  | +1.1 … +3.9  | +0.6 … +2.3  | +0.8 … +2.6  |
+//! | 8 bytes  | +1.9 … +7.1  | +0.1 … +2.8  | −0.0 … +2.9  |
+//! | 16 bytes | +3.2 … +13.4 | −0.7 … +5.3  | −0.6 … +5.2  |
+//! | 32 bytes | +5.6 … +26.2 | −2.5 … +9.2  | −1.6 … +10.0 |
 //!
-//! At 4 bytes this beats hex, base64url, and base58 in every family, unqualified. At 8
-//! bytes it wins everywhere bar a tie with base58 under GPT-4o. base64url pulls ahead
-//! only at 16 bytes and above and only under the two newest GPT vocabularies, which
-//! have memorised base64 fragments — under Claude it loses by 5 to 9 tokens at those
-//! same sizes.
+//! Hex loses everywhere. At 4 bytes so does everything else, in every family. Above 16
+//! bytes base64url costs a token or two less under the GPT vocabularies, which have
+//! memorised base64 fragments; under Claude it costs five to nine more.
 //!
-//! The character column moves together with that. Four words is 27 characters, which
-//! costs nothing; thirty-two is 224, three wrapped lines, genuinely worse to read than
-//! a 43-character base64 string. Storing the bytes makes length free at rest, but an id
-//! in a log line is being looked at, which is the whole point of the exercise.
+//! It was built for nonce and correlation-id sizes, where it wins outright. A 32-byte
+//! digest is a worse fit — the token margin is gone, and the value is 224 characters
+//! across three wrapped lines rather than something read at a glance.
 //!
-//! So this is the right carrier at nonce and correlation-id sizes, and it weakens as
-//! payloads grow. What no alternative has at any size is the flat column: every value
-//! of a given width costs the same, so a budget is known before minting, where hex and
-//! base64 must both be provisioned for their worst case.
+//! Whatever the size, no alternative has the flat column: every value of a given width
+//! costs the same, so a budget is known before minting, where hex and base64 must both
+//! be provisioned for their worst case.
 //!
 //! ## The alphabet
 //!
@@ -118,31 +113,12 @@
 //! - **No two entries within one character edit, and none a prefix or a
 //!   suffix-derivative of another.** A slipped character, a dropped suffix, or a
 //!   completed word lands outside the alphabet rather than on a different valid entry.
-//!   See "What the alphabet cannot do" for the limit of this.
+//!   For a value that must prove it is intact, see [`CheckedUnigramId`].
 //! - **Nothing charged** — no death, violence, race, gender, religion, or politics.
 //!   These strings surface unbidden in transcripts, logs, and user-facing errors.
 //! - **No function words.** A value made of `that`, `which`, and `would` reads as
 //!   damaged prose rather than as a name.
 //! - **Frozen**, which is the next section.
-//!
-//! ## What the alphabet cannot do
-//!
-//! All 256 symbols are occupied, so **every sequence of alphabet words is a valid
-//! value**. A word replaced by another alphabet word, dropped, repeated, or
-//! transposed yields a clean decode to different bytes, and nothing in the alphabet
-//! can notice. No arrangement of the table changes that; it is what having no spare
-//! symbols means.
-//!
-//! The constraints above are therefore *risk reduction*, not detection. Requiring a
-//! character edit of at least two, and forbidding prefix and suffix relationships,
-//! makes it unlikely that a small textual slip lands on another valid word. It does
-//! not make it noticeable when one does.
-//!
-//! [`CheckedUnigramId`] is the part that detects. One extra word carries a CRC-8 over
-//! the payload, catching every single-word substitution and transposition outright,
-//! and an arbitrary accidental mutation with probability about 255/256. It detects
-//! accidents, not tampering: anyone who can change the payload can recompute the
-//! check word, so a hostile party calls for a keyed MAC over the bytes instead.
 //!
 //! ## Why the join is a space
 //!
@@ -166,15 +142,12 @@
 //! per value, and cannot be talked into treating some other string as one.
 //!
 //! [`UnigramId::recover`] and [`decode_recovered`] are **tolerant**: any run of
-//! characters that is not an ASCII letter separates words, and case is ignored. A
-//! value that came back hyphenated, re-wrapped across lines, comma-joined, quoted, or
-//! shouted still yields the bytes that were sent. That is what belongs where a value
-//! is being retrieved from prose a model produced, and nowhere else — note that under
-//! it, `error message` is a perfectly valid encoded value, because both are alphabet
-//! words.
+//! characters that is not an ASCII letter separates words, and case is ignored, so a
+//! value that came back hyphenated, re-wrapped, comma-joined, quoted, or shouted still
+//! yields the bytes that were sent. It reads the whole input, so isolate the candidate
+//! first.
 //!
-//! Both are exact in what they return: an unknown word is refused and named, never
-//! skipped or guessed at.
+//! Both refuse an unknown word and name it.
 //!
 //! ## Choosing a length
 //!
@@ -206,7 +179,7 @@
 //!
 //! Comparison here is byte equality, which is not constant-time. A value used as a
 //! bearer credential wants a constant-time comparison over [`UnigramId::as_bytes`],
-//! which this crate deliberately does not pretend to provide.
+//! which this crate does not provide.
 //!
 //! ## Why the alphabet is 256 and not larger
 //!
@@ -382,8 +355,8 @@ impl<const N: usize> UnigramId<N> {
     /// or a transcript introduces.
     ///
     /// Any run of characters that is not an ASCII letter separates words, and case is
-    /// ignored. Correspondingly liberal about what it will call a value: `home page`
-    /// parses. Use [`UnigramId::parse`] anywhere that matters.
+    /// ignored. Reads the whole input, so isolate the candidate first, and use
+    /// [`UnigramId::parse`] at a trust boundary.
     pub fn recover(text: &str) -> Result<Self, ParseError> {
         collect_exact(recovered_bytes(text)).map(Self)
     }
@@ -456,17 +429,14 @@ const fn crc8(bytes: &[u8]) -> u8 {
 /// An identifier of `N` bytes carrying a trailing check word, rendered as `N + 1`
 /// alphabet words.
 ///
-/// [`UnigramId`] cannot detect a mutation from one alphabet word to another,
-/// because all 256 symbols are occupied and every word sequence is a valid value.
-/// The alphabet's edit-distance and suffix rules lower the odds of a small textual
-/// slip producing a different valid word; they cannot detect one that does. This
-/// type can. One extra word is 8 bits of CRC, so an arbitrary accidental mutation
-/// is caught with probability about 255/256, and every single-word substitution or
-/// transposition is caught outright.
+/// One extra word is 8 bits of CRC over the payload, so every single-word substitution
+/// and transposition is caught outright, and an arbitrary accidental mutation with
+/// probability about 255/256. Use it where a value has to prove it is the one that was
+/// issued without the original in hand.
 ///
-/// It detects accidents, not tampering. Anyone who can change the payload can
-/// recompute the check word, so a value that must survive a hostile party wants a
-/// keyed MAC over [`CheckedUnigramId::as_bytes`], which this crate does not provide.
+/// It detects accidents, not tampering: anyone who can change the payload can recompute
+/// the check word. A hostile party calls for a keyed MAC over
+/// [`CheckedUnigramId::as_bytes`], which this crate does not provide.
 ///
 /// ```
 /// use unigram::{CheckedUnigramId, ParseError};
@@ -674,7 +644,7 @@ fn preview(word: &str) -> String {
     out
 }
 
-/// Why a word that is not a canonical entry is not one.
+/// Why a word failed canonical parsing.
 ///
 /// Distinguishing these is the point: a value spelled differently is a caller to
 /// correct, and a word that is nothing at all is a value to reject.
@@ -807,14 +777,8 @@ pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
 /// ignored, so a value that came back hyphenated, re-wrapped across lines,
 /// comma-joined, quoted, or shouted still yields the bytes that were sent.
 ///
-/// It reads the whole of what it is given, so it recovers a value that has been
-/// *reformatted*, not one embedded in a sentence: every word present must be an
-/// alphabet word. Isolate the candidate first.
-///
-/// Being this liberal is also why this must not be the parser at a trust boundary.
-/// Under it, `error message` is a valid encoded value, since both are alphabet
-/// words. Use [`decode`] where that matters, and [`CheckedUnigramId`] where a value
-/// needs to prove it is one.
+/// Reads the whole input, so isolate the candidate first. Use [`decode`] at a trust
+/// boundary, and [`CheckedUnigramId`] where a value has to prove it is one.
 pub fn decode_recovered(text: &str) -> Result<Vec<u8>, DecodeError> {
     let bytes: Vec<u8> = recovered_bytes(text).collect::<Result<_, _>>()?;
     if bytes.is_empty() {
