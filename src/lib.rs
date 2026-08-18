@@ -104,6 +104,27 @@
 //! - **No entry is an inflection of another**, so a dropped plural cannot silently
 //!   decode to a different byte.
 //!
+//! ## Why the alphabet is 256 and not larger
+//!
+//! A wider alphabet would carry more bits per token, so it is worth saying why this
+//! one stops where it does. Of the roughly 65,000 space-prefixed lowercase words in
+//! the largest vocabulary, 6,654 are single-token in all five families; 5,452 of
+//! those are 4 to 11 ASCII characters; and 640 of *those* survive Claude, whose
+//! tokenizer is by far the narrowest of the five. Spacing them a character edit
+//! apart leaves about 509.
+//!
+//! So the ceiling is 512 entries — 9 bits per token against the 8 here, and 9 does
+//! not divide 8. Bit-packing 9-bit symbols would save nothing at all on a 4-byte
+//! value (32 bits still needs 4 words), one token on a 16-byte value, and three on a
+//! 32-byte one, in exchange for the byte-indexed table, the claim that one word is
+//! one byte, and a codec that can be described in a sentence. It is not a trade
+//! worth making.
+//!
+//! Other scripts do not change this. CJK is denser on the page but agrees across
+//! families far less: 39 characters are single-token in all five, which does not
+//! reach even 256. Accented Latin is worse — 5 words survive. The binding constraint
+//! was never English; it is the intersection itself.
+//!
 //! ## Changing the alphabet
 //!
 //! Nothing here tokenizes, at runtime or under test: the OS CSPRNG is this crate's
