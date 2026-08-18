@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.1
+
+Documentation and tooling only; the wire format is unchanged from 0.3.0.
+
+- **Prior art.** BIP39 is the obvious "why not just use an existing wordlist", and it
+  now has a measured answer: only 349 of its 2048 words are single-token both ways
+  across all five families, so a BIP39-derived encoding lands on the same 256 entries
+  and the same 8 bits per token — without the bare-cost or context guarantees. Claude
+  is the binding constraint there too, at 366.
+- **Limitations are stated up front** rather than found in a subsection. base64url is
+  cheaper on mean under GPT-4o and a fifth of the characters; the plain type cannot
+  detect a word-for-word substitution; a readable id is not a secret.
+- **`verify-claude.py`** cross-checks the Claude column against Anthropic's official
+  `count_tokens` endpoint and reports where `ctok` disagrees. The unofficial
+  reconstruction was the weakest source behind the crate's strongest claim.
+- Links to the published crate from the README and the repository.
+
 ## 0.3.0
 
 **The wire format changed again.** Values encoded by 0.2.x decode to different bytes.

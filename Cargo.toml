@@ -1,11 +1,12 @@
 [package]
 name = "unigram"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.78"
 license = "MIT"
 description = "Bijective codec between bytes and single-token words, for moving identifiers through a language model"
 repository = "https://github.com/bleugreen/unigram"
+homepage = "https://crates.io/crates/unigram"
 documentation = "https://docs.rs/unigram"
 readme = "README.md"
 keywords = ["encoding", "tokenizer", "llm", "codec", "identifier"]

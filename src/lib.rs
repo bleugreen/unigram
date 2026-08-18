@@ -224,6 +224,13 @@
 //! reach even 256. Accented Latin is worse — 5 words survive. The binding constraint
 //! was never English; it is the intersection itself.
 //!
+//! Nor does an existing wordlist. BIP39 holds 2048 words, which would be 11 bits
+//! each, but it was chosen for human transcription rather than for tokenizers: only
+//! 349 of them are single-token both ways across all five families, Claude again
+//! being the narrowest at 366. Rounded down to a power of two that is 256 entries and
+//! 8 bits per token — the same density this reaches, from a list that carries no
+//! bare-cost or surrounding-context guarantee.
+//!
 //! ## The alphabet is the wire format
 //!
 //! [`ALPHABET`] is frozen. Byte `n` is `ALPHABET[n]`, all 256 slots are occupied, and

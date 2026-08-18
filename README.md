@@ -1,6 +1,13 @@
 # unigram
 
+[![crates.io](https://img.shields.io/crates/v/unigram.svg)](https://crates.io/crates/unigram)
+[![docs.rs](https://docs.rs/unigram/badge.svg)](https://docs.rs/unigram)
+[![MIT](https://img.shields.io/crates/l/unigram.svg)](LICENSE)
+
 A bijective codec between bytes and words that cost exactly one LLM token.
+
+`cargo add unigram` · [crates.io](https://crates.io/crates/unigram) ·
+[docs.rs](https://docs.rs/unigram) · [CHANGELOG](CHANGELOG.md)
 
 ```text
 a14ed61a                          ->  password email share building
@@ -18,6 +25,22 @@ prompts, logs, and error messages, being looked at; this makes that free.
 One word is one byte and one token, so a value costs exactly as many tokens as it
 carries bytes — flat, for every value, with the spaces between words costing nothing.
 The four words above carry 32 bits in 4 tokens; the sixteen carry 128 in 16.
+
+### What it is not
+
+**It is not the cheapest encoding.** base64url beats it on mean tokens under GPT-4o
+(29.9 vs 32.0 for 32 bytes) and is a fifth of the characters. What `unigram` has that
+base64url does not is *flat* cost — every value of a width costs the same, so a budget
+is known before minting — and a decisive win under Claude, whose vocabulary has not
+memorised base64 fragments (32.0 vs 41.3). Numbers and full table
+[below](#against-the-alternatives).
+
+**It is not error-detecting on its own.** All 256 symbols are occupied, so any word
+swapped for another word decodes cleanly to different bytes. `CheckedUnigramId` adds a
+CRC-8 word for that; the plain type cannot and never will.
+
+**It is not a secret.** Readable is the point; unguessable is a separate property that
+comes from width, and comparison here is not constant-time.
 
 ## Using it
 
@@ -42,7 +65,7 @@ answer and has to guess at.
 Free functions (`encode`, `decode`, `decode_recovered`, `try_mint`) are there for
 variable-length payloads.
 
-### Two parsers, deliberately
+### Two parsers
 
 `parse` is **canonical**: lowercase alphabet words joined by exactly one space, and
 nothing else. Exactly one accepted spelling per value, which is what belongs anywhere
@@ -96,7 +119,7 @@ payloads per size, so the right-hand column is a sample maximum, not a proven bo
 The margin narrows under the GPT-4 vocabularies, where 32 bytes of hex average 37.1,
 and widens sharply under Llama's SentencePiece, at 58.2 against the same flat 32.
 
-### Every context, swept
+### Every context
 
 One token per byte holds space-prefixed **and bare**, so a value costs exactly N at
 the start of a string, after a space, in JSON, and mid-sentence. The only surcharge is
@@ -122,7 +145,7 @@ two or three tokens bare, so a value opening with `council` cost N+2 at the star
 string — and its verifier tested one payload whose opening word happened to be cheap.
 Both are fixed. The sweep is why the claim needs no exception list.
 
-### Against the alternatives, not just hex
+### Against the alternatives
 
 Mean marginal tokens over 64 deterministic 32-byte payloads:
 
@@ -141,6 +164,26 @@ terminal, a URL, or a database column, and not at all in a context window.
 What no other row has is the flat column. Every value of a given width costs exactly
 the same, so a budget is known before the value is minted. That, and being readable,
 is what is bought here — not the lowest mean.
+
+### Why not an existing wordlist?
+
+BIP39, Diceware, the PGP word list, and `what3words` all predate this and all map
+data to words. None was chosen for tokenizers, and it shows. BIP39 is the closest
+comparison — 2048 words, which would be 11 bits each if they were all single tokens:
+
+| wordlist  | words | single-token both ways, all families | usable alphabet |
+|-----------|------:|-------------------------------------:|----------------:|
+| BIP39     |  2048 |                              **349** | 256 → 8 bits/token |
+| `unigram` |   256 |                                  256 | 256 → 8 bits/token |
+
+Only 349 of BIP39's 2048 survive the filter, and Claude is the binding constraint at
+366. Round 349 down to a power of two and a BIP39-derived encoding lands on exactly
+256 entries and exactly 8 bits per token — the same density, from a list that also has
+no bare-cost or surrounding-context guarantee.
+
+BIP39 optimises for a different thing, and does it well: unique four-character
+prefixes and human-transcription distance, for seed phrases read off paper. That is
+worth having. It is not what makes a word cost one token.
 
 ## Choosing a length
 
@@ -173,7 +216,7 @@ Comparison is byte equality, which is not constant-time. A value used as a beare
 credential wants a constant-time comparison over `as_bytes`, which this crate
 deliberately does not pretend to provide.
 
-## The join is a space, deliberately
+## The join is a space
 
 Tokenizer vocabularies hold their canonical word entries space-prefixed, so the space
 between two words is absorbed into the word that follows it and costs nothing. No
